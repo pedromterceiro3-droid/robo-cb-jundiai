@@ -1,0 +1,193 @@
+# ============================================================
+#  CONFIGURAÇÃO DO ROBÔ DE COBRANÇA — LEANKEEP (CB Jundiaí)
+#  Edite no Bloco de Notas e reinicie o robô para valer.
+#  Grupo/tópico e gestor são configurados pelo Telegram:
+#  /configurar_topico (dentro do tópico) e /sou_gestor (no privado)
+# ============================================================
+
+fuso = "America/Sao_Paulo"
+
+# Unidade cujas atividades serão cobradas (como aparece no Leankeep)
+unidade = "CB JUNDIAÍ"
+
+# Também cobrar atividades atrasadas de dias anteriores? (0 = só as do dia)
+incluir_atrasadas_dias = 0
+
+# Resumo para o gestor. Antes das 12h = resumo do DIA ANTERIOR (inclui o fechamento da madrugada)
+resumo_diario = "07:00"
+
+# 2º aviso: quantos minutos ANTES do prazo (0 = desligado)
+aviso_antes_prazo_min = 30
+
+# Copiar cada cobrança também no privado do gestor
+copiar_cobrancas_gestor = true
+
+# Palavras que, escritas no tópico Leankeep diário, fazem o robô conferir a baixa no Leankeep
+palavras_baixa = ["baixei", "baixado", "baixada", "baixamos", "feito", "concluído", "concluída", "finalizado", "pronto", "realizado"]
+
+# Trechos removidos do fim das descrições do Leankeep (ex.: " - JUN")
+remover_sufixos = [" - JUN"]
+
+# Padrão: depois do prazo, cobra de novo a cada X minutos, até Y vezes
+# (cada cobrança pode ter o seu: reforco_intervalo_min / reforco_maximo)
+[reforco]
+intervalo_min = 30
+maximo = 2
+
+# ------------------------------------------------------------
+# COBRANÇAS — copie um bloco [[cobrancas]] para criar outra
+#   aviso / prazo: horários. Prazo menor que o aviso = passa da meia-noite
+#   palavras: trechos do nome da atividade/plano no Leankeep ([] = todas do dia)
+#   excluir:  trechos que NÃO entram nesta cobrança
+#   dias:     "seg","ter","qua","qui","sex","sab","dom"
+#   (palavras/excluir só valem quando o robô estiver ligado ao Leankeep)
+# ------------------------------------------------------------
+
+[[cobrancas]]
+nome = "Leitura de água, energia e gás"
+aviso = "09:00"
+prazo = "10:00"
+palavras = ["LEITURA"]
+excluir = ["QGBT"]
+dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
+privado = true
+responsaveis = []
+
+[[cobrancas]]
+nome = "Checklist de banheiros, brinquedoteca e salões"
+aviso = "10:00"
+prazo = "11:00"
+palavras = ["BANHEIRO", "BRINQUEDOTECA", "SALAO", "SALOES"]
+excluir = []
+dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
+privado = true
+responsaveis = []
+
+[[cobrancas]]
+nome = "Checklists da manutenção"
+aviso = "16:00"
+prazo = "18:00"
+palavras = ["CHECKLIST: MANUTENCAO"]
+excluir = ["BANHEIRO", "BRINQUEDOTECA", "SALAO", "SALOES", "LEITURA", "QGBT", "EXAUST", "INSUFLA", "FECHAMENTO", "DESLIGAMENTO", "BALCOES REFRIGERADOS"]
+dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
+privado = true
+responsaveis = []
+
+[[cobrancas]]
+nome = "Leitura do QGBT (domingo)"
+aviso = "13:00"
+prazo = "14:00"
+palavras = ["QGBT"]
+excluir = []
+dias = ["dom"]
+privado = true
+responsaveis = []
+
+[[cobrancas]]
+nome = "Fechamento: exaustão/insuflamento, loja e registro de gás"
+aviso = "23:30"
+prazo = "02:00"            # madrugada do dia seguinte
+palavras = ["EXAUST", "INSUFLA", "FECHAMENTO", "DESLIGAMENTO", "BALCOES REFRIGERADOS"]
+excluir = []
+dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
+privado = true
+responsaveis = []
+reforco_maximo = 0         # só cobra uma vez às 02:00 (sem reforços de madrugada)
+avisar_baixa_atrasada = false   # fechamento costuma ser baixado depois do horário
+
+# ------------------------------------------------------------
+# OCORRÊNCIAS — fotos/mensagens do tópico de ocorrências viram pendências
+#   Configure o tópico enviando /configurar_ocorrencias DENTRO dele.
+# ------------------------------------------------------------
+[ocorrencias]
+ativo = true
+lista_horario = "07:00"          # lista de pendências (tópico + privado do gestor)
+confirmar_registro = true        # robô responde "📌 Ocorrência #N registrada" com botão
+min_caracteres_texto = 15        # mensagem só de texto menor que isso não vira ocorrência
+juntar_segundos = 120            # foto + texto da mesma pessoa em até 2 min = 1 ocorrência
+palavras_resolvido = ["resolvido", "resolvida", "concluído", "concluída", "finalizado"]
+palavras_andamento = ["em andamento", "andamento", "verificando", "vou verificar", "estou vendo"]
+
+# ------------------------------------------------------------
+# RESUMO SEMANAL (privado do gestor) — baixas no prazo x em atraso
+#   Peça a qualquer momento: /semana (semana passada) ou /semana atual
+# ------------------------------------------------------------
+[resumo_semanal]
+ativo = true
+quando = "seg 08:00"             # dia e hora do envio (resume a semana anterior, seg a dom)
+meta_atraso_pct = 5              # até 5% de atraso = 🟢
+alerta_atraso_pct = 15           # até 15% = 🟡 ; acima = 🔴
+fora_do_indice = ["FECHAMENTO DA LOJA"]   # aparece à parte, não conta no % de atraso
+
+# Tolerância depois do horário limite: baixa até X horas depois conta como OK
+# (compara com o nome do PLANO no Leankeep, igual à planilha de análise)
+[[resumo_semanal.tolerancias]]
+palavras = ["REGISTRO GAS", "REGISTRO DE GAS"]   # fechamento do registro de gás
+horas = 3
+
+[[resumo_semanal.tolerancias]]
+palavras = ["EXAUST"]                           # desligamento da exaustão e insuflamento
+horas = 3
+
+# ------------------------------------------------------------
+# LEMBRETE DIÁRIO NO GRUPO DE FECHAMENTO — conferir data/hora dos relógios
+#   Configure enviando /configurar_fechamento DENTRO do grupo de fechamento.
+# ------------------------------------------------------------
+[lembrete_relogio]
+ativo = true
+horario = "23:00"
+
+# ------------------------------------------------------------
+# TAGME — fila de espera e reservas (grupo "Bot - Diretoria", tópico "Bot da Tagme")
+#   Login: TAGME_EMAIL e TAGME_SENHA no arquivo .env
+#   Configure o destino enviando /configurar_tagme DENTRO do tópico.
+# ------------------------------------------------------------
+[tagme]
+ativo = true
+venue_id = "1f1a2df6-d738-6510-844a-461e7b222271"   # Coco Bambu Jundiaí
+intervalo_fila_seg = 60          # de quanto em quanto tempo olha a fila
+avisar_fila_zerada = true
+status_na_fila = ["waiting", "notified"]   # situações que contam como "na fila"
+resumo_reservas = "10:00"        # horário do resumo diário
+resumo_modo = "amanha"           # o resumo mostra as reservas de AMANHÃ
+
+[tagme.periodos]
+# Almoço até 17h; Jantar a partir das 17h (sem happy hour).
+# Para voltar a ter happy hour, ponha o jantar_inicio depois do happy_hour_inicio (ex.: "20:00").
+happy_hour_inicio = "17:00"
+jantar_inicio = "17:00"
+
+# ------------------------------------------------------------
+# LEMBRETES PERSONALIZADOS — copie um bloco [[lembretes]] para criar outro
+#   texto:   o que aparece em destaque (do jeito que você escrever)
+#   horario: "HH:MM"
+#   dias:    "seg","ter","qua","qui","sex","sab","dom"
+#   marcar:  @usuários do Telegram (eles recebem notificação). Quem não tem @ pode ser
+#            colocado pelo nome (ex.: "Gabrielle") — funciona se a pessoa já escreveu em algum grupo do robô
+#   onde:    "leankeep" (tópico Leankeep diário), "ocorrencias", "fechamento", "tagme" ou "gestor"
+#   ativo:   false para pausar sem apagar
+#   Veja os cadastrados com /lembretes no Telegram.
+# ------------------------------------------------------------
+[[lembretes]]
+texto = "FAZER LEANKEEP DE ABERTURA E SETORES"
+horario = "09:30"
+dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
+marcar = ["@Carlosh0512", "Gabrielle", "@WilmenOsorio", "@Rhayrodriguez", "@Glaubergois", "@Rinaldo_santana"]
+onde = "leankeep"
+ativo = true
+
+[[lembretes]]
+texto = "FAZER CHECKLISTS DA MANUTENÇÃO ATÉ AS 18h"
+horario = "17:00"
+dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
+marcar = ["@Carlosh0512", "Gabrielle", "@WilmenOsorio", "@Rhayrodriguez", "@Glaubergois", "@Rinaldo_santana"]
+onde = "leankeep"
+ativo = true
+
+[[lembretes]]
+texto = "FAZER LEITURA DO QGBT ATÉ AS 14h"
+horario = "13:00"
+dias = ["dom"]
+marcar = ["@Carlosh0512", "Gabrielle", "@WilmenOsorio", "@Rhayrodriguez", "@Glaubergois", "@Rinaldo_santana"]
+onde = "leankeep"
+ativo = true

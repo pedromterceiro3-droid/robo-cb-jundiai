@@ -1,0 +1,58 @@
+name: Robo
+
+on:
+  schedule:
+    - cron: "2-59/5 * * * *"   # de 5 em 5 minutos (fora do minuto cheio, que é mais congestionado)
+  workflow_dispatch:            # botão "Run workflow" para rodar na hora
+
+concurrency:
+  group: robo
+  cancel-in-progress: false     # nunca roda duas rodadas ao mesmo tempo
+
+permissions:
+  contents: write               # para guardar os dados (criptografados) no ramo "estado"
+
+jobs:
+  rodada:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar bibliotecas
+        run: pip install -q -r requirements.txt
+
+      - name: Abrir dados guardados
+        run: |
+          set -e
+          if git ls-remote --exit-code --heads origin estado >/dev/null 2>&1; then
+            git fetch -q --depth=1 origin estado
+            git show origin/estado:estado.enc > /tmp/estado.enc
+            test -s /tmp/estado.enc
+            mv /tmp/estado.enc estado.enc
+            echo "Dados abertos do ramo estado"
+          else
+            echo "Primeira rodada: usando estado_inicial.enc"
+          fi
+
+      - name: Rodada do robô
+        env:
+          ROBO_ENV: ${{ secrets.ROBO_ENV }}
+        run: python rodada.py
+
+      - name: Guardar dados
+        if: always()
+        run: |
+          if [ ! -s estado.enc ]; then echo "Nada para guardar"; exit 0; fi
+          rm -rf "$RUNNER_TEMP/est" && mkdir "$RUNNER_TEMP/est" && cp estado.enc "$RUNNER_TEMP/est/"
+          cd "$RUNNER_TEMP/est"
+          git init -q -b estado
+          git add estado.enc
+          git -c user.name="robo" -c user.email="robo@users.noreply.github.com" commit -q -m "estado"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" estado
+          echo "Dados guardados"
