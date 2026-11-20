@@ -1,4 +1,3 @@
-yaml
 name: Robo
 
 on:
@@ -57,5 +56,3 @@ jobs:
           git -c user.name="robo" -c user.email="robo@users.noreply.github.com" commit -q -m "estado"
           git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" estado
           echo "Dados guardados"
-
-D
