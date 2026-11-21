@@ -1642,14 +1642,13 @@ def rel_cfg() -> dict:
 
 
 TEXTO_RELOGIO = (
-    "⏰ <b>Lembrete do fechamento — confira os relógios!</b>\n\n"
+    "🚨🚨 <b>LEMBRETE DO FECHAMENTO — CONFIRA OS RELÓGIOS!</b> 🚨🚨\n\n"
     "Antes de registrar o <b>fechamento do registro de gás</b> e o "
     "<b>desligamento da exaustão e insuflamento</b>, confira no relógio:\n"
     "   ▫️ <b>Dia e mês</b> corretos\n"
     "   ▫️ <b>Ano</b> correto ({ano})\n"
     "   ▫️ <b>Hora</b> certa\n\n"
-    "Se estiver errado, <b>ajuste o relógio antes de tirar a foto</b> e avise a manutenção. "
-    "Relógio com data errada já gerou apontamento em auditoria."
+    "Se estiver errado, <b>ajuste o relógio antes de tirar a foto</b> e avise a manutenção."
 )
 
 
@@ -2401,7 +2400,7 @@ def destino_lembrete(onde: str):
 
 
 def texto_lembrete(lem: dict) -> str:
-    L = [f"🚨 <b>{esc(lem.get('texto', ''))}</b>"]
+    L = [f"🚨🚨 <b>{esc(lem.get('texto', '').upper())}</b> 🚨🚨"]
     if lem.get("detalhe"):
         L += ["", esc(lem["detalhe"])]
     if lem.get("marcar"):
