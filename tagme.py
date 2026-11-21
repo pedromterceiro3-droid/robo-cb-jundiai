@@ -200,10 +200,20 @@ class Tagme:
             return
         self._campos_logados.add(tipo)
         a = itens[0]
-        log.info("Tagme: campos de %s: %s", tipo,
-                 {k: (type(v).__name__ if isinstance(v, (dict, list)) else
-                      ("…" if any(p in k.lower() for p in ("name", "nome", "phone", "email", "cpf", "doc")) else v))
-                  for k, v in a.items()})
+
+        def resumo(d, prof=0):
+            out = {}
+            for k, v in d.items():
+                if isinstance(v, dict) and prof < 2:
+                    out[k] = resumo(v, prof + 1)
+                elif isinstance(v, list):
+                    out[k] = [resumo(v[0], prof + 1)] if v and isinstance(v[0], dict) and prof < 2 else "lista"
+                elif any(p in k.lower() for p in ("name", "nome", "phone", "email", "cpf", "doc", "tel", "mail")):
+                    out[k] = "…" if v else "(vazio)"
+                else:
+                    out[k] = type(v).__name__
+            return out
+        log.info("Tagme: campos de %s (sem dados pessoais): %s", tipo, json.dumps(resumo(a), ensure_ascii=False))
 
     # ---------- consultas ----------
     def fila(self) -> list[dict]:

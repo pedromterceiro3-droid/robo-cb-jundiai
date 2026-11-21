@@ -165,22 +165,35 @@ jantar_inicio = "17:00"
 #   dias:    "seg","ter","qua","qui","sex","sab","dom"
 #   marcar:  @usuários do Telegram (eles recebem notificação). Quem não tem @ pode ser
 #            colocado pelo nome (ex.: "Gabrielle") — funciona se a pessoa já escreveu em algum grupo do robô
+#   conferir: nome de uma cobrança acima: o robô consulta o Leankeep e SÓ manda o lembrete
+#             se ainda houver pendência (e lista o que falta). Sem "conferir", sai sempre.
 #   onde:    "leankeep" (tópico Leankeep diário), "ocorrencias", "fechamento", "tagme" ou "gestor"
 #   ativo:   false para pausar sem apagar
 #   Veja os cadastrados com /lembretes no Telegram.
 # ------------------------------------------------------------
 [[lembretes]]
-texto = "FAZER LEANKEEP DE ABERTURA E SETORES"
+texto = "FAZER LEITURA DE ÁGUA, ENERGIA E GÁS ATÉ AS 10h"
 horario = "09:30"
 dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
+conferir = "Leitura de água, energia e gás"
+marcar = ["@Carlosh0512", "Gabrielle", "@WilmenOsorio", "@Rhayrodriguez", "@Glaubergois", "@Rinaldo_santana"]
+onde = "leankeep"
+ativo = true
+
+[[lembretes]]
+texto = "FAZER CHECKLIST DE BANHEIROS, BRINQUEDOTECA E SALÕES ATÉ AS 11h"
+horario = "10:30"
+dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
+conferir = "Checklist de banheiros, brinquedoteca e salões"
 marcar = ["@Carlosh0512", "Gabrielle", "@WilmenOsorio", "@Rhayrodriguez", "@Glaubergois", "@Rinaldo_santana"]
 onde = "leankeep"
 ativo = true
 
 [[lembretes]]
 texto = "FAZER CHECKLISTS DA MANUTENÇÃO ATÉ AS 18h"
-horario = "17:00"
+horario = "17:30"
 dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
+conferir = "Checklists da manutenção"
 marcar = ["@Carlosh0512", "Gabrielle", "@WilmenOsorio", "@Rhayrodriguez", "@Glaubergois", "@Rinaldo_santana"]
 onde = "leankeep"
 ativo = true
@@ -189,6 +202,7 @@ ativo = true
 texto = "FAZER LEITURA DO QGBT ATÉ AS 14h"
 horario = "13:00"
 dias = ["dom"]
+conferir = "Leitura do QGBT (domingo)"
 marcar = ["@Carlosh0512", "Gabrielle", "@WilmenOsorio", "@Rhayrodriguez", "@Glaubergois", "@Rinaldo_santana"]
 onde = "leankeep"
 ativo = true

@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 import tomllib
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.error import NetworkError, TimedOut
 from telegram.request import HTTPXRequest
@@ -441,7 +441,7 @@ async def cobrar_leankeep(context, cob, rodada):
     if cob.get("marcar"):
         linhas += ["", marcacoes(cob["marcar"])]
     texto = "\n".join(linhas)
-    m = await enviar_grupo(bot, texto)
+    m = await enviar_grupo(bot, texto, reply_markup=botoes_baixa(cob))
     if m is not None:
         MSG_COBRANCA[m.message_id] = CFG["cobrancas"].index(cob)
     if CFG.get("copiar_cobrancas_gestor", True) and CFG.get("gestor_chat_id") and not TESTE.get():
@@ -1578,7 +1578,133 @@ async def mensagem_grupo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if no_topico_ocorrencias(msg) or no_topico_saida(msg):
         await oc_mensagem(update, context)
     elif no_topico_leankeep(msg):
-        await conferir_baixa(update, context)
+        if not await receber_msg_livre(update, context):
+            await conferir_baixa(update, context)
+
+
+# =====================================================================
+#  BOTÕES NAS COBRANÇAS/LEMBRETES: Baixa realizada / Baixa pendente / Escrever mensagem
+# =====================================================================
+ARQ_RESPOSTAS = DADOS / "respostas_cobranca.json"
+
+
+def botoes_baixa(cob):
+    if not cob or not CFG.get("botoes_baixa", True):
+        return None
+    i = CFG["cobrancas"].index(cob)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Baixa realizada", callback_data=f"bx|r|{i}"),
+         InlineKeyboardButton("⏳ Baixa pendente", callback_data=f"bx|p|{i}")],
+        [InlineKeyboardButton("✍️ Escrever mensagem", callback_data=f"bx|m|{i}")]])
+
+
+def registrar_resposta(cob, quem, tipo, texto=""):
+    dados = ler(ARQ_RESPOSTAS, {})
+    lst = dados.setdefault("itens", [])
+    lst.append({"em": datetime.now(FUSO).isoformat(timespec="minutes"), "cobranca": cob["nome"],
+                "quem": quem, "tipo": tipo, "texto": texto})
+    dados["itens"] = lst[-500:]
+    gravar(ARQ_RESPOSTAS, dados)
+
+
+def _mencao_usuario(u) -> str:
+    return f'<a href="tg://user?id={u.id}">{esc(u.first_name or u.full_name)}</a>'
+
+
+async def botao_baixa(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    _, acao, idx = q.data.split("|", 2)
+    try:
+        cob = CFG["cobrancas"][int(idx)]
+    except Exception:
+        await q.answer("Essa cobrança não existe mais.")
+        return
+    u = q.from_user
+    quem = u.full_name
+    chat = q.message.chat.id
+    top = q.message.message_thread_id if q.message.is_topic_message else None
+    g = CFG.get("gestor_chat_id")
+
+    if acao == "r":
+        await q.answer("Conferindo no Leankeep…")
+        try:
+            pend = sem_duplicadas(await buscar_pendentes(cob.get("palavras"), data_ref(cob), cob.get("excluir")))
+        except Exception as e:
+            await enviar(context.bot, chat, f"Não consegui conferir no Leankeep agora: {esc(e)}",
+                         message_thread_id=top, reply_to_message_id=q.message.message_id)
+            return
+        registrar_resposta(cob, quem, "realizada" if not pend else "realizada_mas_pendente")
+        if not pend:
+            await enviar(context.bot, chat,
+                         f"✅ <b>{esc(cob['nome'])}</b>\n\n{_mencao_usuario(u)} confirmou a baixa.\n"
+                         f"Conferi no Leankeep: <b>tudo baixado!</b> Valeu!",
+                         message_thread_id=top, reply_to_message_id=q.message.message_id)
+            return
+        L = [f"⚠️ <b>{esc(cob['nome'])}</b>", "",
+             f"{_mencao_usuario(u)} marcou <b>Baixa realizada</b>, mas no Leankeep ainda falta ({len(pend)}):"]
+        L += [f"• {esc(legivel(a.descricao))}" for a in pend[:20]]
+        if len(pend) > 20:
+            L.append(f"• … e mais {len(pend) - 20}")
+        L += ["", "<i>Confira se a baixa foi salva no app (às vezes fica sem sincronizar).</i>"]
+        await enviar(context.bot, chat, "\n".join(L), message_thread_id=top,
+                     reply_to_message_id=q.message.message_id)
+        if g and CFG.get("avisar_respostas_gestor", True):
+            await enviar(context.bot, int(g), f"⚠️ <b>{esc(quem)}</b> marcou Baixa realizada em "
+                                              f"<b>{esc(cob['nome'])}</b>, mas o Leankeep ainda mostra "
+                                              f"{len(pend)} pendente(s).")
+    elif acao == "p":
+        await q.answer("Anotado: baixa pendente.")
+        registrar_resposta(cob, quem, "pendente")
+        await enviar(context.bot, chat,
+                     f"⏳ <b>{esc(cob['nome'])}</b>\n\n{_mencao_usuario(u)} informou que a baixa está "
+                     f"<b>pendente</b>. Prazo: {esc(txt_prazo(cob))}.",
+                     message_thread_id=top, reply_to_message_id=q.message.message_id)
+        if g and CFG.get("avisar_respostas_gestor", True):
+            await enviar(context.bot, int(g), f"⏳ <b>{esc(quem)}</b> informou baixa <b>pendente</b> em "
+                                              f"<b>{esc(cob['nome'])}</b> (prazo {esc(txt_prazo(cob))}).")
+    elif acao == "m":
+        await q.answer("Escreva sua mensagem respondendo ao pedido do robô.")
+        m = await enviar(context.bot, chat,
+                         f"✍️ {_mencao_usuario(u)}, escreva sua mensagem sobre <b>{esc(cob['nome'])}</b> "
+                         f"<b>respondendo a esta mensagem</b>.",
+                         message_thread_id=top,
+                         reply_markup=ForceReply(selective=True, input_field_placeholder="Sua mensagem…"))
+        if m is not None:
+            dados = ler(ARQ_RESPOSTAS, {})
+            dados.setdefault("pedidos", {})[str(m.message_id)] = {
+                "uid": u.id, "cob": int(idx), "em": datetime.now(FUSO).isoformat(timespec="minutes")}
+            gravar(ARQ_RESPOSTAS, dados)
+
+
+async def receber_msg_livre(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Resposta ao pedido "escreva sua mensagem": registra, confirma e manda para o gestor."""
+    msg = update.effective_message
+    alvo = msg.reply_to_message
+    if not alvo:
+        return False
+    dados = ler(ARQ_RESPOSTAS, {})
+    ped = dados.get("pedidos", {}).get(str(alvo.message_id))
+    if not ped:
+        return False
+    texto = (msg.text or msg.caption or "").strip()
+    if not texto:
+        return True
+    try:
+        cob = CFG["cobrancas"][int(ped["cob"])]
+    except Exception:
+        return True
+    quem = msg.from_user.full_name if msg.from_user else "?"
+    dados["pedidos"].pop(str(alvo.message_id), None)
+    gravar(ARQ_RESPOSTAS, dados)
+    registrar_resposta(cob, quem, "mensagem", texto)
+    await enviar(context.bot, msg.chat.id, f"📝 Recebido, {esc(msg.from_user.first_name if msg.from_user else '')}! "
+                                           f"Sua mensagem sobre <b>{esc(cob['nome'])}</b> foi registrada.",
+                 message_thread_id=msg.message_thread_id if msg.is_topic_message else None,
+                 reply_to_message_id=msg.message_id)
+    g = CFG.get("gestor_chat_id")
+    if g and CFG.get("avisar_respostas_gestor", True):
+        await enviar(context.bot, int(g), f"📝 <b>{esc(quem)}</b> sobre <b>{esc(cob['nome'])}</b>:\n\n{esc(texto)}")
+    return True
 
 
 # =====================================================================
@@ -2020,6 +2146,52 @@ def plural(n: int, palavra: str) -> str:
     return f"{n} {palavra}" + ("" if n == 1 else "s")
 
 
+_CHAVES_NOME = ("name", "fullname", "full_name", "nome", "nomecompleto", "guestname", "customername",
+                "clientname", "contactname", "bookername", "displayname")
+_DONO = ("customer", "guest", "client", "contact", "booker", "person", "holder", "owner", "reservationholder",
+         "cliente", "consumer", "profile", "user")
+_NAO_E_PESSOA = ("venue", "restaurant", "table", "area", "section", "company", "partner", "source", "origin",
+                 "channel", "createdby", "updatedby", "employee", "staff", "tag", "occasion", "status", "event")
+
+
+def _nome_em(d: dict) -> str:
+    for k, v in d.items():
+        if isinstance(v, str) and v.strip() and k.lower().replace("_", "") in _CHAVES_NOME:
+            return v
+    ini = next((v for k, v in d.items() if isinstance(v, str) and k.lower().replace("_", "") in ("firstname", "first", "primeironome")), "")
+    fim = next((v for k, v in d.items() if isinstance(v, str) and k.lower().replace("_", "") in ("lastname", "last", "surname", "sobrenome")), "")
+    return f"{ini} {fim}".strip()
+
+
+def _procurar_nome(o, prof=0) -> str:
+    """Procura o nome do cliente em qualquer lugar da reserva (a Tagme muda o formato às vezes)."""
+    if not isinstance(o, dict) or prof > 3:
+        return ""
+    if prof == 0:
+        n = _nome_em(o)
+        if n:
+            return n
+    # primeiro, objetos com cara de "cliente"
+    for k, v in o.items():
+        kl = k.lower().replace("_", "")
+        if isinstance(v, dict) and any(t in kl for t in _DONO) and not any(t in kl for t in _NAO_E_PESSOA):
+            n = _nome_em(v) or _procurar_nome(v, prof + 1)
+            if n:
+                return n
+        if isinstance(v, list) and v and isinstance(v[0], dict) and any(t in kl for t in _DONO):
+            n = _nome_em(v[0]) or _procurar_nome(v[0], prof + 1)
+            if n:
+                return n
+    # depois, qualquer outro objeto que não seja de restaurante/mesa/etc.
+    for k, v in o.items():
+        kl = k.lower().replace("_", "")
+        if isinstance(v, dict) and not any(t in kl for t in _NAO_E_PESSOA) and not any(t in kl for t in _DONO):
+            n = _nome_em(v) if prof < 2 else ""
+            if n:
+                return n
+    return ""
+
+
 def _nome_completo(o: dict) -> str:
     v = _c(o, "name", "guestName", "customerName", "fullName", padrao="")
     if isinstance(v, dict):
@@ -2032,7 +2204,10 @@ def _nome_completo(o: dict) -> str:
                     str(x) for x in (g.get("firstName"), g.get("lastName")) if x)
                 if v:
                     break
-    return " ".join(str(v).split()).title() if v else "(sem nome)"
+    if not v:
+        v = _procurar_nome(o)
+    v = " ".join(str(v).split()).strip(" -–—.,") if v else ""
+    return v.title() if v else "(sem nome)"
 
 
 def _etiqueta(st: str, realizado: bool) -> str:
@@ -2046,31 +2221,29 @@ def _etiqueta(st: str, realizado: bool) -> str:
     return ""
 
 
-def texto_reservas(reservas, dia: date, titulo: str, realizado: bool) -> list[str]:
-    nomes_dia = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"]
-    p = tg_cfg().get("periodos", {}) or {}
-    hh, jj = p.get("happy_hour_inicio", "17:00"), p.get("jantar_inicio", "17:00")
-    fmt = lambda x: x[:-3] + "h" if x.endswith(":00") else x.replace(":", "h")
-    rotulo = {"Almoço": f"ALMOÇO (até {fmt(hh)})", "Happy hour": f"HAPPY HOUR ({fmt(hh)} às {fmt(jj)})",
-              "Jantar": f"JANTAR (a partir das {fmt(jj)})", "Sem horário": "SEM HORÁRIO"}
+def texto_reservas(reservas, dia: date, titulo: str, realizado: bool, com_titulo: bool = True) -> list[str]:
+    """Bloco de um dia: total, e por período (Almoço / Jantar) cada reserva com hora, nome e pessoas."""
     ativas = [o for o in reservas if _cat_reserva(_status(o)) != "canceladas"]
     canceladas = [o for o in reservas if _cat_reserva(_status(o)) == "canceladas"]
-    L = [f"<b>{titulo} – {nomes_dia[dia.weekday()]} {dia.strftime('%d/%m')}</b>"]
+    L = [f"<b>Reservas {titulo_dia(titulo)} ({dia.strftime('%d/%m')})</b>"] if com_titulo else []
     if not ativas:
         L += ["Nenhuma reserva."]
         if canceladas:
             L.append(f"Canceladas: {len(canceladas)}")
         return L
-    L.append(f"Total: <b>{plural(len(ativas), 'reserva')}</b>, <b>{plural(sum(_pessoas(o) for o in ativas), 'pessoa')}</b>")
+    L.append(f"Total: <b>{plural(len(ativas), 'reserva')}</b> · <b>{plural(sum(_pessoas(o) for o in ativas), 'pessoa')}</b>")
     por = defaultdict(list)
     for o in ativas:
         por[_periodo(o)].append(o)
+    icone = {"Almoço": "☀️", "Happy hour": "🍹", "Jantar": "🌙", "Sem horário": ""}
     for per in ["Almoço", "Happy hour", "Jantar", "Sem horário"]:
         lista = por.get(per)
         if not lista:
             continue
         lista.sort(key=lambda o: (_hora_local(o) or (99, 0), -_pessoas(o)))
-        L += ["", f"<b>{rotulo[per]}</b> – {plural(len(lista), 'reserva')}, {plural(sum(_pessoas(o) for o in lista), 'pessoa')}"]
+        # emoji depois da palavra: no Telegram do Pedro, linha que começa com emoji perde a quebra
+        L += ["", f"<b>{per} {icone[per]}</b> – {plural(len(lista), 'reserva')} · "
+                  f"{plural(sum(_pessoas(o) for o in lista), 'pessoa')}"]
         for o in lista[:60]:
             h = _hora_local(o)
             hora = f"{h[0]:02d}:{h[1]:02d}" if h else "--:--"
@@ -2082,6 +2255,10 @@ def texto_reservas(reservas, dia: date, titulo: str, realizado: bool) -> list[st
     if canceladas:
         L += ["", f"Canceladas: {len(canceladas)} ({plural(sum(_pessoas(o) for o in canceladas), 'pessoa')})"]
     return L
+
+
+def titulo_dia(titulo: str) -> str:
+    return {"Amanhã": "de amanhã", "Hoje": "de hoje", "Ontem": "de ontem"}.get(titulo, "do dia")
 
 
 def botoes_tagme() -> InlineKeyboardMarkup:
@@ -2134,7 +2311,9 @@ async def montar_tagme(modo: str) -> str:
         r = await asyncio.wait_for(asyncio.to_thread(TG.reservas, dia), 120)
         titulo = "Amanhã" if dia == h + timedelta(days=1) else ("Hoje" if dia == h else
                  ("Ontem" if dia == h - timedelta(days=1) else "Reservas do dia"))
-        L += texto_reservas(r, dia, titulo, realizado=dia < h)
+        L = [f"📅 <b>{esc(CFG.get('unidade_nome', 'Coco Bambu Jundiaí'))} – Reservas {titulo_dia(titulo)} "
+             f"({dia.strftime('%d/%m')})</b>"]
+        L += texto_reservas(r, dia, titulo, realizado=dia < h, com_titulo=False)
     L += ["", f"<i>Atualizado em {agora_txt}</i>"]
     return "\n".join(L)
 
@@ -2279,8 +2458,12 @@ async def executar_reenvio(context, chave, responder):
     try:
         if chave.startswith("lem"):
             lem = CFG["lembretes"][int(chave[3:])]
+            texto, _ = await montar_lembrete(lem)
+            if not texto:
+                await responder(f"✅ Tudo baixado no Leankeep: {lem.get('texto', '')}. Não enviei o lembrete.")
+                return
             gid, top = destino_lembrete(lem.get("onde"))
-            await enviar(context.bot, gid, texto_lembrete(lem), message_thread_id=top)
+            await enviar(context.bot, gid, texto, message_thread_id=top)
         elif chave.startswith("cob"):
             cob = CFG["cobrancas"][int(chave[3:])]
             if MODO == "leankeep":
@@ -2499,8 +2682,12 @@ async def executar_teste(context, chave, chat_id):
             await tg_enviar(bot, texto, reply_markup=botoes_tagme())
     elif chave.startswith("l") and chave[1:].isdigit():
         lem = CFG["lembretes"][int(chave[1:])]
+        texto, cob = await montar_lembrete(lem)
+        if not texto:
+            texto, _ = await montar_lembrete(lem, exemplo=True)
+            aviso = "Agora está tudo baixado no Leankeep, então no dia a dia este lembrete NÃO sairia. Mostrei com atividades de exemplo."
         gid, top = destino_lembrete(lem.get("onde"))
-        await enviar(bot, gid, texto_lembrete(lem), message_thread_id=top)
+        await enviar(bot, gid, texto, message_thread_id=top)
     elif chave == "comandos":
         await bot.send_message(chat_id, COMANDOS_TXT, parse_mode=ParseMode.HTML)
     if aviso:
@@ -2743,19 +2930,54 @@ def destino_lembrete(onde: str):
     return CFG.get("grupo_chat_id"), CFG.get("topico_id") or None
 
 
-def texto_lembrete(lem: dict) -> str:
+def texto_lembrete(lem: dict, pendentes=None) -> str:
     L = [f"🚨🚨 <b>{esc(lem.get('texto', '').upper())}</b> 🚨🚨"]
     if lem.get("detalhe"):
         L += ["", esc(lem["detalhe"])]
+    if pendentes:
+        L += ["", f"Ainda falta baixar no Leankeep ({len(pendentes)}):"]
+        L += bloco_atividades(pendentes, cadastros(), limite=30)
     if lem.get("marcar"):
         L += ["", marcacoes(lem["marcar"])]
     return "\n".join(L)
 
 
+def cobranca_do_lembrete(lem: dict):
+    nome = normalizar(lem.get("conferir", ""))
+    if not nome:
+        return None
+    return next((c for c in CFG.get("cobrancas", []) if normalizar(c["nome"]) == nome), None)
+
+
+async def montar_lembrete(lem: dict, exemplo: bool = False):
+    """Devolve (texto, cobrança) ou (None, cobrança) quando o Leankeep mostra tudo baixado.
+    Se o lembrete tem 'conferir', consulta o Leankeep antes e lista o que falta."""
+    cob = cobranca_do_lembrete(lem)
+    if not cob or MODO != "leankeep":
+        return texto_lembrete(lem), cob
+    if exemplo:
+        return texto_lembrete(lem, exemplo_ativs(cob)), cob
+    try:
+        pend = sem_duplicadas(await buscar_pendentes(cob.get("palavras"), data_ref(cob), cob.get("excluir")))
+    except Exception as e:  # Leankeep fora do ar: melhor lembrar do que não lembrar
+        log.warning("Lembrete '%s': Leankeep não respondeu (%s); enviando sem conferir", lem.get("texto"), e)
+        return texto_lembrete(lem), cob
+    if not pend:
+        log.info("Lembrete '%s' não enviado: tudo baixado no Leankeep", lem.get("texto"))
+        return None, cob
+    return texto_lembrete(lem, pend), cob
+
+
 async def enviar_lembrete(context: ContextTypes.DEFAULT_TYPE):
     lem = context.job.data
+    texto, cob = await montar_lembrete(lem)
+    if not texto:
+        return
     gid, top = destino_lembrete(lem.get("onde"))
-    await enviar(context.bot, gid, texto_lembrete(lem), message_thread_id=top)
+    extra = {"reply_markup": botoes_baixa(cob)} if cob and MODO == "leankeep" else {}
+    m = await enviar(context.bot, gid, texto, message_thread_id=top, **extra)
+    if m is not None and cob:  # quem responder "baixei" a este lembrete é conferido nesta cobrança
+        MSG_COBRANCA[m.message_id] = CFG["cobrancas"].index(cob)
 
 
 def agendar_lembretes(jq):
@@ -2828,6 +3050,7 @@ def montar_app(token: str) -> Application:
     app.add_handler(CallbackQueryHandler(oc_botao, pattern=r"^oca?\|"))
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & ~filters.COMMAND, mensagem_grupo))
     app.add_handler(CommandHandler("alerta", cmd_alerta))
+    app.add_handler(CallbackQueryHandler(botao_baixa, pattern=r"^bx\|"))
     app.add_handler(CommandHandler("reativar", cmd_reativar))
     app.add_handler(CallbackQueryHandler(botao_reativar, pattern=r"^ocr\|"))
     app.add_handler(CommandHandler("cancelar", cmd_cancelar))

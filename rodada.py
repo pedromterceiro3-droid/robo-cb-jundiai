@@ -215,6 +215,21 @@ async def enviar_marcados(app, estado, agora):
     desde = datetime.fromisoformat(ultima) if ultima else agora - timedelta(minutes=15)
     desde = max(desde, agora - timedelta(hours=40))
     evs = [e for e in eventos(desde, agora) if e[0] not in feitos]
+    # lembrete que confere uma cobrança substitui a mensagem dessa cobrança no mesmo horário
+    juntos = set()
+    for e in evs:
+        if e[2] == "lembrete":
+            cob = B.cobranca_do_lembrete(e[3])
+            if cob:
+                juntos.add((cob["nome"], e[1]))
+    restantes = []
+    for e in evs:
+        if e[2] == "cobranca" and (e[3]["cobranca"]["nome"], e[1]) in juntos:
+            feitos[e[0]] = agora.date().isoformat()
+            log.info("Cobrança %s vai junto com o lembrete do mesmo horário", e[0])
+            continue
+        restantes.append(e)
+    evs = restantes
     # da mesma cobrança, só manda a mensagem mais recente (se a rodada atrasou, não manda 3 seguidas)
     ultima_cob = {}
     for e in evs:
