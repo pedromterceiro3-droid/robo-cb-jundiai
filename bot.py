@@ -138,11 +138,16 @@ EXEMPLO = contextvars.ContextVar("exemplo", default=None)    # atividades fictí
 
 
 def nome_destino(chat_id, thread=None) -> str:
-    c = str(chat_id)
+    c, t = str(chat_id), int(thread or 0)
+    sc, st = oc_saida()
+    if sc and c == str(sc) and t == int(st or 0) and (sc, st) != oc_coleta():
+        return "tópico Keepbot"
+    if c == str(CFG.get("oc_grupo_chat_id")) and t == int(CFG.get("oc_topico_id") or 0):
+        return "tópico onde a equipe posta as ocorrências"
     if c == str(CFG.get("grupo_chat_id")):
         return "tópico Leankeep diário"
     if c == str(CFG.get("oc_grupo_chat_id")):
-        return "grupo/tópico de ocorrências"
+        return "grupo de ocorrências"
     if c == str(CFG.get("fech_grupo_chat_id")):
         return "grupo de fechamento"
     if c == str(CFG.get("tagme_grupo_chat_id")):
@@ -634,7 +639,8 @@ async def cmd_agenda(update: Update, context: ContextTypes.DEFAULT_TYPE):
                   f" | tópico: {CFG.get('topico_id') or '-'}")
     linhas.append(f"Gestor: {CFG.get('gestor_chat_id') or 'NÃO CONFIGURADO (/sou_gestor)'}")
     linhas.append(f"Ocorrências: {'tópico configurado' if CFG.get('oc_grupo_chat_id') else 'NÃO CONFIGURADO (/configurar_ocorrencias)'}"
-                  f" | lista às {oc_cfg().get('lista_horario', '07:00')}")
+                  f" | lista às {oc_cfg().get('lista_horario', '07:00')}"
+                  f" | lista e avisos: {'tópico Keepbot' if saida_separada() else 'mesmo tópico (/configurar_keepbot)'}")
     linhas.append(f"Tagme: {'ligada' if TG else 'desligada (TAGME_EMAIL/TAGME_SENHA no .env)'}"
                   f" | destino: {'tópico configurado' if CFG.get('tagme_grupo_chat_id') else 'NÃO CONFIGURADO (/configurar_tagme)'}"
                   f" | reservas às {tg_cfg().get('resumo_reservas', '10:00')}")
@@ -784,6 +790,41 @@ def eh_resolvido(texto: str) -> bool:
     return any(normalizar(p) in t for p in palavras)
 
 
+def oc_coleta():
+    """Onde a equipe posta as fotos (ex.: tópico Batidão semanal)."""
+    return CFG.get("oc_grupo_chat_id"), (CFG.get("oc_topico_id") or 0)
+
+
+def oc_saida():
+    """Onde o robô publica a lista, as confirmações e os avisos (ex.: tópico Keepbot).
+    Sem tópico próprio configurado, usa o mesmo tópico da coleta."""
+    if CFG.get("oc_saida_chat_id"):
+        return CFG["oc_saida_chat_id"], (CFG.get("oc_saida_topico_id") or 0)
+    return oc_coleta()
+
+
+def saida_separada() -> bool:
+    c1, t1 = oc_coleta()
+    c2, t2 = oc_saida()
+    return bool(c2) and (str(c1), int(t1 or 0)) != (str(c2), int(t2 or 0))
+
+
+async def oc_avisar(bot, msg, texto, **kw):
+    """Responde sobre uma ocorrência: no tópico Keepbot (se configurado) ou como resposta à foto."""
+    if saida_separada():
+        c, t = oc_saida()
+        return await enviar(bot, c, texto, message_thread_id=t or None, **kw)
+    return await msg.reply_text(texto, **kw)
+
+
+def no_topico_saida(msg) -> bool:
+    if not saida_separada():
+        return False
+    c, t = oc_saida()
+    atual = msg.message_thread_id if msg.is_topic_message else 0
+    return msg.chat.id == int(c) and int(t or 0) == int(atual or 0)
+
+
 def no_topico_ocorrencias(msg) -> bool:
     gid = CFG.get("oc_grupo_chat_id")
     if not gid or msg.chat.id != int(gid):
@@ -837,7 +878,7 @@ def eh_andamento(texto: str) -> bool:
 
 async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
-    if not msg or not no_topico_ocorrencias(msg):
+    if not msg or not (no_topico_ocorrencias(msg) or no_topico_saida(msg)):
         return
     texto = (msg.text or msg.caption or "").strip()
     quem = msg.from_user.full_name if msg.from_user else "?"
@@ -853,12 +894,14 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 break
         if num and eh_resolvido(texto):
             if oc_resolver(dados, num, quem):
-                await msg.reply_text(f"✅ Ocorrência #{num} concluída por {quem}.")
+                await oc_avisar(context.bot, msg, f"✅ Ocorrência #{num} concluída por {esc(quem)}.")
         elif num and eh_andamento(texto):
             if oc_andamento(dados, num, quem):
-                await msg.reply_text(f"🟡 Ocorrência #{num} em andamento ({quem}).",
-                                     reply_markup=botao_oc(num, dados["itens"][num]))
+                await oc_avisar(context.bot, msg, f"🟡 Ocorrência #{num} em andamento ({esc(quem)}).",
+                                reply_markup=botao_oc(num, dados["itens"][num]))
         return  # outras respostas são só conversa sobre a ocorrência
+    if no_topico_saida(msg):
+        return  # no tópico Keepbot só valem respostas às mensagens do robô
 
     # 2) álbum de fotos: as demais fotos entram na mesma ocorrência
     if msg.media_group_id:
@@ -910,13 +953,26 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     gravar(ARQ_OCORR, dados)
     if oc_cfg().get("confirmar_registro", True):
-        r = await msg.reply_text(
-            f"📌 Ocorrência #{num} registrada – 🔴 Pendente\n\n"
-            f"Use os botões abaixo (ou responda a foto com \"em andamento\" ou \"resolvido\").",
-            reply_markup=botao_oc(num))
-        dados = oc_dados()
-        dados["itens"][num]["msg_robo"] = r.message_id
-        gravar(ARQ_OCORR, dados)
+        if saida_separada():
+            o = dados["itens"][num]
+            resumo = esc(texto[:120] + ("…" if len(texto) > 120 else "")) if texto else "(só foto)"
+            link = f"<a href=\"{oc_link(o)}\">{'📷 ver foto' if o.get('foto') else '↗ ver mensagem'}</a>"
+            c, t = oc_saida()
+            r = await enviar(context.bot, c,
+                             f"📌 <b>Ocorrência #{num} registrada</b> – 🔴 Pendente\n\n"
+                             f"{resumo}\n"
+                             f"<i>{esc(quem)} · {enviada.strftime('%d/%m %H:%M')}</i> · {link}\n\n"
+                             f"Use os botões abaixo para atualizar.",
+                             message_thread_id=t or None, reply_markup=botao_oc(num))
+        else:
+            r = await msg.reply_text(
+                f"📌 Ocorrência #{num} registrada – 🔴 Pendente\n\n"
+                f"Use os botões abaixo (ou responda a foto com \"em andamento\" ou \"resolvido\").",
+                reply_markup=botao_oc(num))
+        if r is not None:
+            dados = oc_dados()
+            dados["itens"][num]["msg_robo"] = r.message_id
+            gravar(ARQ_OCORR, dados)
 
 
 async def oc_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -952,9 +1008,15 @@ async def oc_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                       reply_markup=botao_oc(num, o))
     except Exception:
         pass
-    # avisa no tópico de ocorrências (se o botão foi tocado em outro lugar, ex.: privado)
-    if q.message.chat.id != o["chat_id"] or (q.message.text or "").startswith("📋"):
-        await enviar(context.bot, o["chat_id"], aviso, message_thread_id=o.get("topico") or None)
+    # avisa no tópico Keepbot (ou no de ocorrências), a não ser que o toque já tenha sido
+    # na própria mensagem de registro desse tópico
+    sc, st = oc_saida()
+    m = q.message
+    no_registro_da_saida = (sc and m.chat.id == int(sc)
+                            and int((m.message_thread_id if m.is_topic_message else 0) or 0) == int(st or 0)
+                            and not (m.text or "").startswith("📋"))
+    if not no_registro_da_saida:
+        await enviar(context.bot, sc or o["chat_id"], aviso, message_thread_id=st or None)
 
 
 def oc_texto_lista() -> tuple[str, InlineKeyboardMarkup | None]:
@@ -1003,9 +1065,9 @@ def oc_texto_lista() -> tuple[str, InlineKeyboardMarkup | None]:
 async def oc_publicar_lista(context: ContextTypes.DEFAULT_TYPE):
     texto, teclado = oc_texto_lista()
     extra = {"reply_markup": teclado} if teclado else {}
-    if CFG.get("oc_grupo_chat_id"):
-        await enviar(context.bot, CFG["oc_grupo_chat_id"], texto,
-                     message_thread_id=CFG.get("oc_topico_id") or None, **extra)
+    c, t = oc_saida()
+    if c:
+        await enviar(context.bot, c, texto, message_thread_id=t or None, **extra)
     if CFG.get("gestor_chat_id"):
         await enviar(context.bot, CFG["gestor_chat_id"], texto, **extra)
 
@@ -1023,6 +1085,24 @@ async def cmd_configurar_ocorrencias(update: Update, context: ContextTypes.DEFAU
     await msg.reply_text(
         "✅ Pronto! Fotos e mensagens deste tópico agora viram ocorrências numeradas.\n"
         f"Lista de pendências todo dia às {oc_cfg().get('lista_horario', '07:00')}.")
+
+
+async def cmd_configurar_keepbot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    if update.effective_chat.type == "private":
+        await msg.reply_text("Envie este comando DENTRO do tópico Keepbot do grupo da manutenção.")
+        return
+    if CFG.get("gestor_chat_id") and update.effective_user.id != int(CFG["gestor_chat_id"]):
+        await msg.reply_text("Só o gestor pode configurar o tópico Keepbot.")
+        return
+    topico = msg.message_thread_id if msg.is_topic_message else 0
+    salvar_ajuste(oc_saida_chat_id=update.effective_chat.id, oc_saida_topico_id=topico)
+    await msg.reply_text(
+        "✅ Pronto! A partir de agora este tópico recebe:\n"
+        f"• a lista de ocorrências pendentes todo dia às {oc_cfg().get('lista_horario', '07:00')}\n"
+        "• o aviso de cada ocorrência nova, com os botões\n"
+        "• os avisos de \"em andamento\" e \"concluída\"\n\n"
+        "As fotos continuam sendo postadas no tópico de ocorrências de sempre.")
 
 
 async def cmd_pendencias(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1326,7 +1406,7 @@ async def mensagem_grupo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg:
         return
     lembrar_pessoa(msg.from_user)
-    if no_topico_ocorrencias(msg):
+    if no_topico_ocorrencias(msg) or no_topico_saida(msg):
         await oc_mensagem(update, context)
     elif no_topico_leankeep(msg):
         await conferir_baixa(update, context)
@@ -2092,7 +2172,8 @@ COMANDOS_TXT = (
     "<b>Configuração (só uma vez)</b>\n"
     "• /sou_gestor – no privado\n"
     "• /configurar_topico – dentro do tópico Leankeep diário\n"
-    "• /configurar_ocorrencias – dentro do tópico de ocorrências\n"
+    "• /configurar_ocorrencias – dentro do tópico onde a equipe posta as fotos\n"
+    "• /configurar_keepbot – dentro do tópico Keepbot (lista e avisos)\n"
     "• /configurar_fechamento – dentro do grupo de fechamento\n"
     "• /configurar_tagme – dentro do tópico Bot da Tagme\n"
     "• /cadastrar Nome – colaborador se identifica (nome igual ao Leankeep)"
@@ -2219,14 +2300,21 @@ async def executar_teste(context, chave, chat_id):
         await bot.send_message(chat_id, "Montando o resumo semanal… pode levar 1–2 min.")
         await enviar_semanal(context)
     elif chave == "oc_reg":
-        await enviar(bot, CFG.get("oc_grupo_chat_id"),
-                     "📌 Ocorrência #12 registrada – 🔴 Pendente\n\n"
-                     "Use os botões abaixo (ou responda a foto com \"em andamento\" ou \"resolvido\").",
-                     reply_markup=botao_oc("12"))
+        sc, st = oc_saida()
+        if saida_separada():
+            txt = ("📌 <b>Ocorrência #12 registrada</b> – 🔴 Pendente\n\n"
+                   "Lâmpada queimada no corredor da cozinha (exemplo)\n"
+                   f"<i>Fulano · {datetime.now(FUSO).strftime('%d/%m %H:%M')}</i> · 📷 ver foto\n\n"
+                   "Use os botões abaixo para atualizar.")
+        else:
+            txt = ("📌 Ocorrência #12 registrada – 🔴 Pendente\n\n"
+                   "Use os botões abaixo (ou responda a foto com \"em andamento\" ou \"resolvido\").")
+        await enviar(bot, sc, txt, message_thread_id=st or None, reply_markup=botao_oc("12"))
     elif chave == "oc_lista":
         texto, teclado = oc_texto_lista()
         extra = {"reply_markup": teclado} if teclado else {}
-        await enviar(bot, CFG.get("oc_grupo_chat_id"), texto, **extra)
+        sc, st = oc_saida()
+        await enviar(bot, sc, texto, message_thread_id=st or None, **extra)
     elif chave == "relogio":
         texto = rel_cfg().get("texto") or TEXTO_RELOGIO
         await enviar(bot, CFG.get("fech_grupo_chat_id"), texto.replace("{ano}", str(hoje().year)))
@@ -2298,6 +2386,9 @@ async def botao_teste(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =====================================================================
 def destino_lembrete(onde: str):
     onde = normalizar(onde or "leankeep").lower()
+    if onde.startswith("keep"):
+        c, t = oc_saida()
+        return c, t or None
     if onde.startswith("ocorr"):
         return CFG.get("oc_grupo_chat_id"), CFG.get("oc_topico_id") or None
     if onde.startswith("fecha"):
@@ -2374,6 +2465,7 @@ def montar_app(token: str) -> Application:
     app.add_handler(CallbackQueryHandler(botao_feito, pattern=r"^feito\|"))
     app.add_handler(CommandHandler("configurar_ocorrencias", cmd_configurar_ocorrencias))
     app.add_handler(CommandHandler("pendencias", cmd_pendencias))
+    app.add_handler(CommandHandler("configurar_keepbot", cmd_configurar_keepbot))
     app.add_handler(CommandHandler("resolver", cmd_resolver))
     app.add_handler(CommandHandler("excluir", cmd_excluir))
     app.add_handler(CommandHandler("semana", cmd_semana))
