@@ -126,6 +126,24 @@ def eventos(desde: datetime, agora: datetime):
     return sorted(saida, key=lambda e: e[1])
 
 
+def descrever(u) -> str:
+    """Resumo de uma mensagem recebida, para o registro (sem conteúdo longo)."""
+    try:
+        if u.callback_query:
+            q = u.callback_query
+            return f"botão '{q.data}' de {q.from_user.id} no chat {q.message.chat.id if q.message else '?'}"
+        m = u.effective_message
+        if m:
+            txt = (m.text or m.caption or "").strip()
+            tipo = "foto" if m.photo else ("texto" if m.text else "outro")
+            ini = txt[:20] if txt.startswith("/") else (txt[:20] + "…" if txt else "")
+            return (f"{tipo} '{ini}' de {u.effective_user.id if u.effective_user else '?'} "
+                    f"no chat {m.chat.id} ({m.chat.type})")
+    except Exception as e:
+        return f"(não consegui descrever: {e})"
+    return "outro tipo de atualização"
+
+
 async def processar_mensagens(app, estado):
     """Pega tudo que chegou no Telegram desde a última rodada e responde."""
     offset = estado.get("offset")
@@ -142,6 +160,7 @@ async def processar_mensagens(app, estado):
         for u in ups:
             offset = u.update_id + 1
             estado["offset"] = offset
+            log.info("Recebido: %s", descrever(u))
             try:
                 await app.process_update(u)
             except Exception:
@@ -199,6 +218,9 @@ async def rodada():
     token = (os.getenv("TELEGRAM_TOKEN") or "").strip().strip("`'\" ")
     app = B.montar_app(token)
     await app.initialize()
+    log.info("Robô @%s | modo %s | Tagme %s | gestor configurado: %s | grupo configurado: %s",
+             app.bot.username, B.MODO, "ligada" if B.TG else "desligada",
+             "sim" if B.CFG.get("gestor_chat_id") else "NÃO", "sim" if B.CFG.get("grupo_chat_id") else "NÃO")
     agora = datetime.now(B.FUSO)
     try:
         await processar_mensagens(app, estado)
