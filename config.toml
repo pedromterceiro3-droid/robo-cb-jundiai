@@ -107,6 +107,7 @@ min_caracteres_texto = 15        # mensagem só de texto menor que isso não vir
 juntar_segundos = 120            # foto + texto da mesma pessoa em até 2 min = 1 ocorrência
 palavras_resolvido = ["resolvido", "resolvida", "concluído", "concluída", "finalizado"]
 palavras_andamento = ["em andamento", "andamento", "verificando", "vou verificar", "estou vendo"]
+avisar_baixa_privado = true      # cada baixa chega no privado do gestor (foto, quem baixou, data) com botão Reativar
 
 # ------------------------------------------------------------
 # RESUMO SEMANAL (privado do gestor) — baixas no prazo x em atraso
@@ -191,3 +192,47 @@ dias = ["dom"]
 marcar = ["@Carlosh0512", "Gabrielle", "@WilmenOsorio", "@Rhayrodriguez", "@Glaubergois", "@Rinaldo_santana"]
 onde = "leankeep"
 ativo = true
+
+# ------------------------------------------------------------
+# ALERTAS (/alerta no privado do robô)
+#   Toque num alerta pronto (ou escreva o seu) e escolha o tópico de destino.
+#   marcar: quem é marcado em todos os alertas (um alerta pronto pode ter o seu próprio "marcar")
+#   Para criar um alerta pronto, copie um bloco [[alertas.prontos]] e troque o texto.
+#   detalhe (opcional): texto menor que aparece embaixo do título.
+# ------------------------------------------------------------
+[alertas]
+marcar = ["@Carlosh0512", "Gabrielle", "@WilmenOsorio", "@Rhayrodriguez", "@Glaubergois", "@Rinaldo_santana"]
+
+[[alertas.prontos]]
+texto = "VERIFICAR O LEANKEEP AGORA"
+
+[[alertas.prontos]]
+texto = "CHECKLISTS ATRASADOS - BAIXAR NO LEANKEEP"
+
+[[alertas.prontos]]
+texto = "CONFERIR OS RELÓGIOS DO FECHAMENTO"
+
+[[alertas.prontos]]
+texto = "ATUALIZAR AS OCORRÊNCIAS PENDENTES"
+detalhe = "Marquem 🟡 Em andamento ou ✅ Concluído no tópico Keepbot."
+
+[[alertas.prontos]]
+texto = "REUNIÃO DA MANUTENÇÃO EM 15 MINUTOS"
+
+
+# ------------------------------------------------------------
+# GITHUB: em cada rodada, o robô fica ouvindo por alguns segundos para
+#   responder na hora quem está tocando nos botões (0 = desliga)
+# ------------------------------------------------------------
+[github]
+escuta_segundos = 90
+
+# ------------------------------------------------------------
+# AVISOS NO PRIVADO DO GESTOR
+#   mencoes: quando alguém marcar o seu @ num grupo onde o robô está, ele manda a mensagem no seu privado
+#   meu_usuario: o seu @ (o robô também descobre sozinho quando você fala com ele)
+# ------------------------------------------------------------
+[avisos]
+mencoes = true
+meu_usuario = ""
+

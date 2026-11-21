@@ -367,12 +367,13 @@ def bloco_atividades(ativs, cads, limite=25) -> list[str]:
     linhas = [f"• {esc(legivel(a.descricao))}" for a in ativs[:limite]]
     if len(ativs) > limite:
         linhas.append(f"• … e mais {len(ativs) - limite}")
-    execs = sorted({e for a in ativs for e in a.executores})
-    if execs:
-        marcados = [mencao(e, cads) for e in execs
-                    if any(normalizar(c["nome_leankeep"]) == normalizar(e) for c in cads.values())]
-        txt = esc(resumir_executores(execs))
-        linhas.append(f"   <i>Executores: {txt}</i>" + (f"  {' '.join(marcados)}" if marcados else ""))
+    if CFG.get("mostrar_executores", False):
+        execs = sorted({e for a in ativs for e in a.executores})
+        if execs:
+            marcados = [mencao(e, cads) for e in execs
+                        if any(normalizar(c["nome_leankeep"]) == normalizar(e) for c in cads.values())]
+            txt = esc(resumir_executores(execs))
+            linhas.append(f"   <i>Executores: {txt}</i>" + (f"  {' '.join(marcados)}" if marcados else ""))
     return linhas
 
 
@@ -843,6 +844,106 @@ def oc_resolver(dados: dict, num: str, quem: str) -> dict | None:
     return o
 
 
+def oc_reativar(dados: dict, num: str, quem: str) -> dict | None:
+    o = dados["itens"].get(str(num))
+    if not o or not o.get("resolvida"):
+        return None
+    o.setdefault("historico", []).append({"reativada_por": quem, "em": datetime.now(FUSO).isoformat(timespec="minutes"),
+                                          "baixa_anterior": o["resolvida"]})
+    o["resolvida"] = None
+    o["andamento"] = None
+    gravar(ARQ_OCORR, dados)
+    return o
+
+
+def _duracao(ini: datetime, fim: datetime) -> str:
+    min_tot = max(0, int((fim - ini).total_seconds() // 60))
+    d, h, m = min_tot // 1440, (min_tot % 1440) // 60, min_tot % 60
+    if d:
+        return f"{d} dia(s) e {h}h"
+    return f"{h}h{m:02d}" if h else f"{m} min"
+
+
+async def oc_baixa_privado(bot, num):
+    """Quando uma ocorrência é baixada, manda no privado do gestor: foto, quem baixou e quando."""
+    g = CFG.get("gestor_chat_id")
+    if not g or not oc_cfg().get("avisar_baixa_privado", True):
+        return
+    o = oc_dados()["itens"].get(str(num))
+    if not o or not o.get("resolvida"):
+        return
+    r = o["resolvida"]
+    criada = datetime.fromisoformat(o["criada"])
+    baixa = datetime.fromisoformat(r["em"])
+    if o.get("foto"):
+        try:
+            await bot.copy_message(int(g), o["chat_id"], o["msg_ids"][0])
+        except Exception as e:
+            log.warning("Não consegui copiar a foto da ocorrência #%s: %s", num, e)
+    reat = len(o.get("historico", []))
+    L = [f"✅ <b>Ocorrência #{num} baixada</b>", "",
+         esc(o.get("texto") or "(só foto)"), "",
+         f"• Baixada por: <b>{esc(r['por'])}</b>",
+         f"• Data da baixa: <b>{baixa:%d/%m/%Y às %H:%M}</b>",
+         f"• Registrada por: {esc(o.get('autor', '?'))} em {criada:%d/%m/%Y às %H:%M}",
+         f"• Tempo até a baixa: {_duracao(criada, baixa)}"]
+    if reat:
+        L.append(f"• Já foi reativada {reat} vez(es) antes")
+    L.append(f"• <a href=\"{oc_link(o)}\">Ver a mensagem original no grupo</a>")
+    L += ["", "<i>Baixa feita por engano? Toque em Reativar.</i>"]
+    teclado = InlineKeyboardMarkup([[InlineKeyboardButton(f"↩️ Reativar #{num}", callback_data=f"ocr|{num}")]])
+    await enviar(bot, int(g), "\n".join(L), reply_markup=teclado)
+
+
+async def oc_avisar_reativada(bot, num, quem):
+    o = oc_dados()["itens"].get(str(num))
+    if not o:
+        return
+    c, t = oc_saida()
+    link = f"<a href=\"{oc_link(o)}\">{'📷 ver foto' if o.get('foto') else '↗ ver mensagem'}</a>"
+    resumo = esc((o.get("texto") or "(só foto)")[:120])
+    await enviar(bot, c, f"↩️ <b>Ocorrência #{num} reativada</b> – volta para 🔴 Pendente\n\n"
+                         f"{resumo}\n<i>Reativada por {esc(quem)} · {datetime.now(FUSO):%d/%m %H:%M}</i> · {link}",
+                 message_thread_id=t or None, reply_markup=botao_oc(num, o))
+
+
+async def botao_reativar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    g = CFG.get("gestor_chat_id")
+    if g and q.from_user.id != int(g):
+        await q.answer("Só o gestor pode reativar.", show_alert=True)
+        return
+    num = q.data.split("|", 1)[1]
+    o = oc_reativar(oc_dados(), num, q.from_user.full_name)
+    if not o:
+        await q.answer("Essa ocorrência já está em aberto.", show_alert=True)
+        return
+    await q.answer(f"#{num} reativada")
+    try:
+        await q.edit_message_text(limpar_texto((q.message.text_html or q.message.text or "")
+                                               + f"\n\n<b>Reativada às {datetime.now(FUSO):%H:%M} – voltou para Pendente.</b>"),
+                                  parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    except Exception:
+        pass
+    await oc_avisar_reativada(context.bot, num, q.from_user.full_name)
+
+
+async def cmd_reativar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _eh_gestor(update):
+        await update.message.reply_text("Só o gestor pode reativar ocorrências.")
+        return
+    if not context.args:
+        await update.message.reply_text("Use assim: /reativar 12")
+        return
+    ok = []
+    for n in [a.lstrip("#") for a in context.args]:
+        if oc_reativar(oc_dados(), n, update.effective_user.full_name):
+            ok.append(n)
+            await oc_avisar_reativada(context.bot, n, update.effective_user.full_name)
+    await update.message.reply_text(f"↩️ Reativada(s): {', '.join('#' + n for n in ok)}" if ok
+                                    else "Nenhuma ocorrência baixada com esse número.")
+
+
 def oc_andamento(dados: dict, num: str, quem: str) -> dict | None:
     o = dados["itens"].get(str(num))
     if not o or o.get("resolvida") or o.get("andamento"):
@@ -895,6 +996,7 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if num and eh_resolvido(texto):
             if oc_resolver(dados, num, quem):
                 await oc_avisar(context.bot, msg, f"✅ Ocorrência #{num} concluída por {esc(quem)}.")
+                await oc_baixa_privado(context.bot, num)
         elif num and eh_andamento(texto):
             if oc_andamento(dados, num, quem):
                 await oc_avisar(context.bot, msg, f"🟡 Ocorrência #{num} em andamento ({esc(quem)}).",
@@ -994,6 +1096,7 @@ async def oc_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await q.answer(f"#{num} concluída!")
         aviso = f"✅ Ocorrência #{num} concluída – {esc(quem)}"
+        await oc_baixa_privado(context.bot, num)
     # atualiza a mensagem onde o botão foi tocado
     try:
         texto_atual = q.message.text or ""
@@ -1135,6 +1238,8 @@ async def cmd_resolver(update: Update, context: ContextTypes.DEFAULT_TYPE):
     nums = [a.lstrip("#") for a in context.args]
     dados = oc_dados()
     ok = [n for n in nums if oc_resolver(dados, n, update.effective_user.full_name)]
+    for n in ok:
+        await oc_baixa_privado(context.bot, n)
     await update.message.reply_text(
         f"✅ Resolvida(s): {', '.join('#' + n for n in ok)}" if ok
         else "Nenhuma ocorrência em aberto com esse número.")
@@ -1376,6 +1481,8 @@ def lembrar_pessoa(u):
         novo = {"nome": nome, "primeiro": getattr(u, "first_name", "") or nome.split(" ")[0],
                 "usuario": getattr(u, "username", "") or ""}
         pes = ler(ARQ_PESSOAS, {})
+        if not novo["usuario"] and pes.get(str(u.id), {}).get("usuario"):
+            novo["usuario"] = pes[str(u.id)]["usuario"]  # não apaga um @ já conhecido
         if pes.get(str(u.id)) != novo:
             pes[str(u.id)] = novo
             gravar(ARQ_PESSOAS, pes)
@@ -1401,11 +1508,73 @@ def marcacoes(lista) -> str:
     return " ".join(out)
 
 
+def meus_usuarios() -> set[str]:
+    """@ do gestor: o que estiver no config ([avisos] meu_usuario) e o que o robô já viu."""
+    us = set()
+    cfg = (CFG.get("avisos", {}) or {}).get("meu_usuario", "")
+    for u in ([cfg] if isinstance(cfg, str) else cfg):
+        if u:
+            us.add(u.lstrip("@").lower())
+    g = CFG.get("gestor_chat_id")
+    if g:
+        p = ler(ARQ_PESSOAS, {}).get(str(g), {})
+        if p.get("usuario"):
+            us.add(p["usuario"].lower())
+    return us
+
+
+async def avisar_mencao(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Se alguém marcar o @ do gestor num grupo, manda a mensagem no privado dele."""
+    msg = update.effective_message
+    g = CFG.get("gestor_chat_id")
+    if not msg or not g or not (CFG.get("avisos", {}) or {}).get("mencoes", True):
+        return
+    if msg.from_user and msg.from_user.id == int(g):
+        return
+    meus = meus_usuarios()
+    marcou = False
+    for ent, txt in list(msg.parse_entities().items()) + list(msg.parse_caption_entities().items()):
+        if ent.type == "mention" and txt.lstrip("@").lower() in meus:
+            marcou = True
+        elif ent.type == "text_mention" and ent.user and ent.user.id == int(g):
+            marcou = True
+    if not marcou:
+        return
+    quem = msg.from_user.full_name if msg.from_user else "?"
+    cid = str(msg.chat.id)
+    base = cid[4:] if cid.startswith("-100") else cid.lstrip("-")
+    link = f"https://t.me/c/{base}/{msg.message_id}"
+    if msg.is_topic_message and msg.message_thread_id:
+        link += f"?thread={msg.message_thread_id}"
+    texto = (msg.text or msg.caption or "").strip()
+    quando = msg.date.astimezone(FUSO) if msg.date else datetime.now(FUSO)
+    L = [f"🔔 <b>Você foi marcado por {esc(quem)}</b>", "",
+         f"• Grupo: {esc(msg.chat.title or '')}",
+         f"• Quando: {quando:%d/%m às %H:%M}"]
+    if texto:
+        L += ["", esc(texto[:600] + ("…" if len(texto) > 600 else ""))]
+    L += ["", f"<a href=\"{link}\">Abrir a mensagem no grupo</a>"]
+    if msg.photo or msg.video or msg.document:
+        try:
+            await context.bot.copy_message(int(g), msg.chat.id, msg.message_id)
+        except Exception as e:
+            log.warning("Não consegui copiar a mensagem marcada: %s", e)
+    await enviar(context.bot, int(g), "\n".join(L))
+
+
+async def guardar_pessoa(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lembrar_pessoa(update.effective_user)
+
+
 async def mensagem_grupo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     if not msg:
         return
     lembrar_pessoa(msg.from_user)
+    try:
+        await avisar_mencao(update, context)
+    except Exception:
+        log.exception("Erro ao verificar menção")
     if no_topico_ocorrencias(msg) or no_topico_saida(msg):
         await oc_mensagem(update, context)
     elif no_topico_leankeep(msg):
@@ -2159,10 +2328,12 @@ COMANDOS_TXT = (
     "• /pendentes – o que falta baixar agora no Leankeep\n"
     "• /pendencias – lista de ocorrências em aberto\n"
     "• /resolver N – conclui a ocorrência N\n"
+    "• /reativar N – reabre uma ocorrência baixada por engano\n"
     "• /excluir N – apaga a ocorrência N\n"
     "• /semana – resumo da semana passada (/semana atual = semana corrente)\n"
     "• /fila – fila de espera da Tagme agora\n"
     "• /reservas – reservas de amanhã (/reservas hoje, /reservas 25/12)\n"
+    "• /alerta – manda um alerta 🚨 para o tópico que você escolher\n"
     "• /reenviar – manda de novo algo que não chegou\n"
     "• /testar – este menu de teste\n\n"
     "<b>Consulta</b>\n"
@@ -2381,6 +2552,179 @@ async def botao_teste(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =====================================================================
+#  /alerta: alertas prontos ou escritos na hora, enviados para o tópico escolhido
+# =====================================================================
+ARQ_ALERTA = DADOS / "alertas_pendentes.json"
+
+
+def al_cfg() -> dict:
+    return CFG.get("alertas", {}) or {}
+
+
+def al_destinos() -> dict:
+    """chave -> (rótulo do botão, chat, tópico). Só aparecem os destinos configurados."""
+    nomes = al_cfg().get("nomes", {}) or {}
+    d = {}
+    if CFG.get("grupo_chat_id"):
+        d["leankeep"] = (nomes.get("leankeep", "📋 Leankeep diário"), CFG["grupo_chat_id"], CFG.get("topico_id") or None)
+    if saida_separada():
+        c, t = oc_saida()
+        d["keepbot"] = (nomes.get("keepbot", "🤖 Keepbot"), c, t or None)
+    if CFG.get("oc_grupo_chat_id"):
+        d["ocorrencias"] = (nomes.get("ocorrencias", "📸 Batidão semanal"), CFG["oc_grupo_chat_id"],
+                            CFG.get("oc_topico_id") or None)
+    if CFG.get("fech_grupo_chat_id"):
+        d["fechamento"] = (nomes.get("fechamento", "🔒 Grupo do fechamento"), CFG["fech_grupo_chat_id"],
+                           CFG.get("fech_topico_id") or None)
+    if CFG.get("tagme_grupo_chat_id"):
+        d["tagme"] = (nomes.get("tagme", "📅 Bot da Tagme"), CFG["tagme_grupo_chat_id"],
+                      CFG.get("tagme_topico_id") or None)
+    if CFG.get("gestor_chat_id"):
+        d["eu"] = ("👤 Só para mim (teste)", CFG["gestor_chat_id"], None)
+    return d
+
+
+def texto_alerta(texto: str, marcar=None) -> str:
+    """1ª linha vira o título com sirenes; o resto, texto normal; no fim, as marcações."""
+    linhas = [l.strip() for l in str(texto).strip().splitlines()]
+    titulo, resto = linhas[0], "\n".join(linhas[1:]).strip()
+    L = [f"🚨🚨 <b>{esc(titulo.upper())}</b> 🚨🚨"]
+    if resto:
+        L += ["", esc(resto)]
+    marcar = al_cfg().get("marcar", []) if marcar is None else marcar
+    if marcar:
+        L += ["", marcacoes(marcar)]
+    return "\n".join(L)
+
+
+def al_pendente(uid, novo=None, apagar=False):
+    dados = ler(ARQ_ALERTA, {})
+    limite = (datetime.now(FUSO) - timedelta(hours=3)).isoformat()
+    dados = {k: v for k, v in dados.items() if v.get("em", "") >= limite}
+    if apagar:
+        dados.pop(str(uid), None)
+    elif novo is not None:
+        novo["em"] = datetime.now(FUSO).isoformat(timespec="seconds")
+        dados[str(uid)] = novo
+    gravar(ARQ_ALERTA, dados)
+    return dados.get(str(uid))
+
+
+def botoes_destino() -> InlineKeyboardMarkup:
+    linhas = [[InlineKeyboardButton(rot, callback_data=f"al|d|{k}")] for k, (rot, _, _) in al_destinos().items()]
+    linhas.append([InlineKeyboardButton("❌ Cancelar", callback_data="al|x")])
+    return InlineKeyboardMarkup(linhas)
+
+
+def menu_alertas() -> InlineKeyboardMarkup:
+    linhas = []
+    for i, a in enumerate(al_cfg().get("prontos", []) or []):
+        linhas.append([InlineKeyboardButton(f"🚨 {a.get('texto', '')[:60]}", callback_data=f"al|p|{i}")])
+    linhas.append([InlineKeyboardButton("✍️ Escrever outro alerta", callback_data="al|novo")])
+    return InlineKeyboardMarkup(linhas)
+
+
+async def pedir_destino(responder, pend):
+    await responder(
+        texto_alerta(pend["texto"], pend.get("marcar")) + "\n\n<b>Para onde envio este alerta?</b> Escolha abaixo:",
+        botoes_destino())
+
+
+async def cmd_alerta(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _eh_gestor(update):
+        await update.message.reply_text("Só o gestor pode enviar alertas.")
+        return
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("Use /alerta no meu privado.")
+        return
+    uid = update.effective_user.id
+
+    async def responder(txt, teclado=None):
+        await enviar(context.bot, update.effective_chat.id, txt, reply_markup=teclado)
+
+    livre = (update.message.text or "").split(maxsplit=1)
+    if len(livre) > 1 and livre[1].strip():  # /alerta texto livre
+        pend = al_pendente(uid, {"texto": livre[1].strip(), "marcar": None})
+        await pedir_destino(responder, pend)
+        return
+    await enviar(context.bot, update.effective_chat.id,
+                 "🚨 <b>Alertas</b>\n\nEscolha um alerta pronto ou escreva o seu.\n"
+                 "<i>Dica: também dá para mandar direto: /alerta TEXTO DO ALERTA</i>",
+                 reply_markup=menu_alertas())
+
+
+async def botao_alerta(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    g = CFG.get("gestor_chat_id")
+    if g and q.from_user.id != int(g):
+        await q.answer("Só o gestor pode enviar alertas.", show_alert=True)
+        return
+    partes = q.data.split("|")
+    uid = q.from_user.id
+    await q.answer()
+
+    async def responder(txt, teclado=None):
+        try:
+            await q.edit_message_text(limpar_texto(txt), parse_mode=ParseMode.HTML, reply_markup=teclado,
+                                      disable_web_page_preview=True)
+        except Exception:
+            await enviar(context.bot, q.message.chat.id, txt, reply_markup=teclado)
+
+    if partes[1] == "p":
+        prontos = al_cfg().get("prontos", []) or []
+        i = int(partes[2])
+        if i >= len(prontos):
+            await responder("Esse alerta não existe mais. Mande /alerta de novo.")
+            return
+        a = prontos[i]
+        texto = a.get("texto", "") + (("\n" + a["detalhe"]) if a.get("detalhe") else "")
+        pend = al_pendente(uid, {"texto": texto, "marcar": a.get("marcar")})
+        await pedir_destino(responder, pend)
+    elif partes[1] == "novo":
+        al_pendente(uid, {"texto": "", "marcar": None, "aguardando": True})
+        await responder("✍️ <b>Escreva o alerta e me mande aqui como mensagem.</b>\n\n"
+                        "A 1ª linha vira o título com as sirenes. Se quiser, escreva mais detalhes nas linhas de baixo.\n\n"
+                        "<i>Para desistir: /cancelar</i>")
+    elif partes[1] == "x":
+        al_pendente(uid, apagar=True)
+        await responder("❌ Alerta cancelado.")
+    elif partes[1] == "d":
+        pend = al_pendente(uid)
+        dest = al_destinos().get(partes[2])
+        if not pend or not pend.get("texto") or not dest:
+            await responder("Esse alerta expirou. Mande /alerta de novo.")
+            return
+        rot, chat, top = dest
+        m = await enviar(context.bot, chat, texto_alerta(pend["texto"], pend.get("marcar")), message_thread_id=top)
+        al_pendente(uid, apagar=True)
+        if m is None:
+            await responder(f"⚠️ Não consegui enviar para {esc(rot)}. Confira se o robô está nesse grupo.")
+        else:
+            await responder(texto_alerta(pend["texto"], pend.get("marcar"))
+                            + f"\n\n<b>Enviado para {esc(rot)} às {datetime.now(FUSO):%H:%M}.</b>")
+
+
+async def msg_privada(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Texto no privado: se o gestor tocou em 'Escrever outro alerta', vira o alerta."""
+    msg = update.effective_message
+    if not msg or not msg.text or not _eh_gestor(update):
+        return
+    pend = al_pendente(update.effective_user.id)
+    if not pend or not pend.get("aguardando"):
+        return
+    pend = al_pendente(update.effective_user.id, {"texto": msg.text.strip(), "marcar": None})
+
+    async def responder(txt, teclado=None):
+        await enviar(context.bot, msg.chat.id, txt, reply_markup=teclado)
+    await pedir_destino(responder, pend)
+
+
+async def cmd_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    al_pendente(update.effective_user.id, apagar=True)
+    await update.message.reply_text("❌ Cancelado.")
+
+
+# =====================================================================
 #  LEMBRETES PERSONALIZADOS (texto + horário + pessoas marcadas com @)
 # =====================================================================
 def destino_lembrete(onde: str):
@@ -2455,6 +2799,8 @@ def montar_app(token: str) -> Application:
     app = (Application.builder().token(token)
            .request(conexao()).get_updates_request(conexao(40)).build())
     app.add_error_handler(erro_geral)
+    from telegram.ext import TypeHandler
+    app.add_handler(TypeHandler(Update, guardar_pessoa), group=-1)  # guarda nome/@ de quem fala com o robô
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("cadastrar", cmd_cadastrar))
     app.add_handler(CommandHandler("pendentes", cmd_pendentes))
@@ -2481,6 +2827,12 @@ def montar_app(token: str) -> Application:
     app.add_handler(CommandHandler("testar_lembrete", cmd_testar_lembrete))
     app.add_handler(CallbackQueryHandler(oc_botao, pattern=r"^oca?\|"))
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & ~filters.COMMAND, mensagem_grupo))
+    app.add_handler(CommandHandler("alerta", cmd_alerta))
+    app.add_handler(CommandHandler("reativar", cmd_reativar))
+    app.add_handler(CallbackQueryHandler(botao_reativar, pattern=r"^ocr\|"))
+    app.add_handler(CommandHandler("cancelar", cmd_cancelar))
+    app.add_handler(CallbackQueryHandler(botao_alerta, pattern=r"^al\|"))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, msg_privada))
     return app
 
 

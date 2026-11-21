@@ -174,6 +174,41 @@ async def processar_mensagens(app, estado):
     log.info("Mensagens tratadas nesta rodada: %s", total)
 
 
+async def escutar(app, estado, segundos: int):
+    """Fica alguns segundos esperando mensagens novas: assim, quem toca em vários botões
+    seguidos (/testar, /alerta…) recebe a resposta na hora, e não só na próxima rodada."""
+    import time as _t
+    fim = _t.monotonic() + segundos
+    total = 0
+    while True:
+        resta = fim - _t.monotonic()
+        if resta < 3:
+            break
+        try:
+            ups = await app.bot.get_updates(offset=estado.get("offset"), timeout=int(min(20, resta)), limit=100,
+                                            allowed_updates=["message", "edited_message", "callback_query"])
+        except Exception as e:
+            log.warning("Escuta interrompida: %s", e)
+            break
+        for u in ups:
+            estado["offset"] = u.update_id + 1
+            log.info("Recebido: %s", descrever(u))
+            try:
+                await app.process_update(u)
+            except Exception:
+                log.exception("Erro ao tratar mensagem")
+            total += 1
+        pend = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        if pend:
+            await asyncio.wait(pend, timeout=120)
+    if estado.get("offset") is not None:
+        try:
+            await app.bot.get_updates(offset=estado["offset"], timeout=0, limit=1)
+        except Exception:
+            pass
+    log.info("Escuta de %ss: %s mensagem(ns)", segundos, total)
+
+
 async def enviar_marcados(app, estado, agora):
     feitos = estado.setdefault("feitos", {})
     ultima = estado.get("ultima")
@@ -243,6 +278,8 @@ async def rodada():
         pend = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
         if pend:
             await asyncio.wait(pend, timeout=240)
+        # fica ouvindo um pouco para responder botões tocados em sequência
+        await escutar(app, estado, int((B.CFG.get("github") or {}).get("escuta_segundos", 90)))
     finally:
         estado["ultima"] = agora.isoformat(timespec="seconds")
         estado["msg_cobranca"] = {str(k): v for k, v in list(B.MSG_COBRANCA.items())[-300:]}
