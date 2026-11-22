@@ -263,6 +263,22 @@ async def buscar_pendentes(palavras: list[str] | None = None, dia: date | None =
         chaves = [normalizar(p) for p in palavras]
         ativs = [a for a in ativs if any(c in normalizar(a.descricao + " " + a.plano)
                                          for c in chaves)]
+    if ativs and CFG.get("cruzar_com_historico", True):
+        # o "pendente" do Leankeep às vezes demora a sair mesmo com a baixa já no Histórico:
+        # o que já aparece como baixado no Histórico não é cobrado
+        try:
+            hist = await asyncio.wait_for(
+                asyncio.to_thread(LK.baixadas, d - timedelta(days=dias_atras), d, CFG.get("unidade")), timeout=150)
+            ja = {a.numero for a in hist if a.numero}
+            ja_desc = {(normalizar(a.descricao), a.data[:10]) for a in hist}
+            antes = len(ativs)
+            ativs = [a for a in ativs if not ((a.numero and a.numero in ja)
+                                              or (normalizar(a.descricao), a.data[:10]) in ja_desc)]
+            if len(ativs) != antes:
+                log.info("Leankeep: %s atividade(s) 'pendente(s)' já estavam no Histórico como baixadas",
+                         antes - len(ativs))
+        except Exception as e:
+            log.warning("Não consegui cruzar com o Histórico do Leankeep: %s", e)
     if excluir:
         fora = [normalizar(p) for p in excluir]
         ativs = [a for a in ativs if not any(c in normalizar(a.descricao + " " + a.plano)
@@ -1520,6 +1536,33 @@ async def verificar_declaradas(context):
         gravar(ARQ_DECL, dados)
 
 
+async def cmd_conferir(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/conferir – mostra, para cada cobrança de hoje, o que o robô está vendo como pendente."""
+    if not _eh_gestor(update):
+        await update.message.reply_text("Só o gestor pode usar /conferir.")
+        return
+    if MODO != "leankeep":
+        await update.message.reply_text("O robô está sem acesso ao Leankeep.")
+        return
+    L = [f"🔎 <b>O que o robô vê no Leankeep agora</b> ({datetime.now(FUSO):%d/%m %H:%M})"]
+    for cob in CFG.get("cobrancas", []):
+        dia = data_ref(cob)
+        if not roda_hoje(cob, dia):
+            continue
+        try:
+            pend = sem_duplicadas(await buscar_pendentes(cob.get("palavras"), dia, cob.get("excluir")))
+        except Exception as e:
+            L += ["", f"<b>{esc(cob['nome'])}</b>: erro ao consultar ({esc(e)})"]
+            continue
+        dec = declarada(cob)
+        L += ["", f"<b>{esc(cob['nome'])}</b> – {'tudo baixado' if not pend else f'{len(pend)} pendente(s)'}"
+              + (f" · baixa declarada por {esc(dec['quem'])} às {dec['em'][11:16]}" if dec else "")]
+        for a in pend[:15]:
+            L.append(f"• {esc(legivel(a.descricao))} <i>(nº {esc(a.numero or '?')}, situação: {esc(a.status)})</i>")
+    L += ["", "<i>Compare com o site: se algo aqui já está baixado lá, me mande o nº da atividade.</i>"]
+    await enviar(context.bot, update.effective_chat.id, "\n".join(L))
+
+
 async def conferir_baixa(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     texto = (msg.text or msg.caption or "").strip()
@@ -2644,6 +2687,7 @@ COMANDOS_TXT = (
     "📖 <b>Comandos do robô</b>\n\n"
     "<b>No dia a dia</b>\n"
     "• /pendentes – o que falta baixar agora no Leankeep\n"
+    "• /conferir – o que o robô está vendo no Leankeep, cobrança por cobrança\n"
     "• /pendencias – lista de ocorrências em aberto\n"
     "• /resolver N – conclui a ocorrência N\n"
     "• /reativar N – reabre uma ocorrência baixada por engano\n"
@@ -3188,6 +3232,7 @@ def montar_app(token: str) -> Application:
     app.add_handler(CallbackQueryHandler(oc_botao, pattern=r"^oca?\|"))
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & ~filters.COMMAND, mensagem_grupo))
     app.add_handler(CommandHandler("alerta", cmd_alerta))
+    app.add_handler(CommandHandler("conferir", cmd_conferir))
     app.add_handler(CallbackQueryHandler(botao_baixa, pattern=r"^bx\|"))
     app.add_handler(CommandHandler("reativar", cmd_reativar))
     app.add_handler(CallbackQueryHandler(botao_reativar, pattern=r"^ocr\|"))
