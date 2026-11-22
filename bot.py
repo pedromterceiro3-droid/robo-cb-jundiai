@@ -377,17 +377,6 @@ def bloco_atividades(ativs, cads, limite=25) -> list[str]:
     return linhas
 
 
-def bloco_planos(ativs) -> list[str]:
-    """Agrupa pelo plano de atividades do Leankeep: '• CHECKLIST: SALÕES — 25 atividade(s)'."""
-    contagem: dict[str, int] = {}
-    for a in ativs:
-        nome = (getattr(a, "plano", "") or "").strip()
-        if not nome or nome == "-":
-            nome = "Outras atividades"
-        contagem[nome] = contagem.get(nome, 0) + 1
-    return [f"• {esc(n)} — <b>{q}</b> atividade(s)" for n, q in contagem.items()]
-
-
 def lista_por_cobranca(ativs, dia: date, cads) -> list[str]:
     """Agrupa as atividades pela cobrança (Leituras, Banheiros…), com semáforo de prazo."""
     restantes = sem_duplicadas(ativs)
@@ -421,6 +410,9 @@ async def cobrar(context: ContextTypes.DEFAULT_TYPE):
 
 async def cobrar_leankeep(context, cob, rodada):
     bot = context.bot
+    if declarada(cob) and not TESTE.get():
+        log.info("Cobrança de %s não enviada: baixa declarada por %s", cob["nome"], declarada(cob)["quem"])
+        return
     try:
         ativs = await buscar_pendentes(cob.get("palavras"), data_ref(cob), cob.get("excluir"))
     except Exception as e:
@@ -448,10 +440,7 @@ async def cobrar_leankeep(context, cob, rodada):
     cor, situacao = semaforo(cob, data_ref(cob))
     linhas = [topo.replace("Ainda falta", f"{cor} {len(ativs)} atividade(s) — ainda falta")
                   .replace("Continua pendente", f"🔴 {len(ativs)} atividade(s) — continua pendente")]
-    if cob.get("listar_atividades", CFG.get("listar_atividades", False)):
-        linhas += bloco_atividades(ativs, cads, limite=30)
-    else:  # forma macro, igual ao app: um item por plano de atividades, com a quantidade
-        linhas += bloco_planos(ativs)
+    linhas += bloco_atividades(ativs, cads, limite=30)
     if cob.get("marcar"):
         linhas += ["", marcacoes(cob["marcar"])]
     texto = "\n".join(linhas)
@@ -702,7 +691,7 @@ def agendar(app: Application):
     for nome, func, h, dias, janela in envios_diarios():
         jq.run_daily(registrar_envio(nome, func), h, days=dias, name=nome, **ATRASO_OK)
     jq.run_repeating(vigiar_atrasos, interval=600, first=60, name="vigiar_atrasos")
-    jq.run_repeating(processar_conferencias, interval=60, first=30, name="conferencias")
+    jq.run_repeating(verificar_declaradas, interval=900, first=120, name="verificar_declaradas")
     if tg_cfg().get("ativo", True):
         jq.run_repeating(vigiar_fila, interval=int(tg_cfg().get("intervalo_fila_seg", 60)),
                          first=20, name="tagme_fila")
@@ -1422,11 +1411,125 @@ def cobrancas_em_andamento():
     return saida
 
 
+# ---------------- baixa declarada pela equipe (o site do Leankeep demora a atualizar) ----------------
+ARQ_DECL = DADOS / "baixas_declaradas.json"
+
+
+def dcfg() -> dict:
+    return CFG.get("baixa_declarada", {}) or {}
+
+
+def _chave_decl(cob) -> str:
+    return f"{data_ref(cob).isoformat()}|{CFG['cobrancas'].index(cob)}"
+
+
+def declarada(cob):
+    """Alguém já disse que baixou esta cobrança hoje? (então o robô não cobra mais no grupo)"""
+    if not dcfg().get("ativo", True):
+        return None
+    return ler(ARQ_DECL, {}).get(_chave_decl(cob))
+
+
+def declarar(cob, quem: str, via: str):
+    dados = ler(ARQ_DECL, {})
+    k = _chave_decl(cob)
+    if k not in dados:
+        dados[k] = {"cobranca": cob["nome"], "quem": quem, "via": via,
+                    "em": datetime.now(FUSO).isoformat(timespec="minutes"), "situacao": "aguardando"}
+        limite = (hoje() - timedelta(days=5)).isoformat()
+        dados = {kk: v for kk, v in dados.items() if kk.split("|")[0] >= limite}
+        gravar(ARQ_DECL, dados)
+        log.info("Baixa declarada: %s por %s (%s)", cob["nome"], quem, via)
+
+
+def cobranca_da_foto():
+    """Foto solta no tópico: vale para a cobrança em andamento agora (entre o 1º aviso e o
+    último reforço). Se houver mais de uma, vale para a que o robô cobrou por último."""
+    agora = datetime.now(FUSO)
+    ref = CFG.get("reforco", {})
+    ativas = []
+    for i, cob in enumerate(CFG.get("cobrancas", [])):
+        dia = data_ref(cob)
+        if not roda_hoje(cob, dia):
+            continue
+        ini = datetime.combine(dia, hora(cob["aviso"]))
+        intervalo = int(cob.get("reforco_intervalo_min", ref.get("intervalo_min", 30)))
+        maximo = int(cob.get("reforco_maximo", ref.get("maximo", 3)))
+        fim = prazo_dt(cob, dia) + timedelta(minutes=intervalo * maximo + 30)
+        if ini <= agora <= fim:
+            ativas.append(i)
+    if len(ativas) > 1:
+        ultimas = {i: max([m for m, c in MSG_COBRANCA.items() if c == i], default=0) for i in ativas}
+        if max(ultimas.values()) > 0:
+            ativas = [max(ultimas, key=ultimas.get)]
+        else:  # sem registro: a que começou mais recentemente
+            ativas = [max(ativas, key=lambda i: datetime.combine(data_ref(CFG["cobrancas"][i]),
+                                                                  hora(CFG["cobrancas"][i]["aviso"])))]
+    return [CFG["cobrancas"][i] for i in ativas]
+
+
+async def reagir(bot, msg, emoji="👍"):
+    try:
+        await bot.set_message_reaction(msg.chat.id, msg.message_id, emoji)
+    except Exception as e:
+        log.info("Não consegui reagir à mensagem: %s", e)
+
+
+async def verificar_declaradas(context):
+    """Confere em silêncio as baixas declaradas. Se depois do tempo-limite o Leankeep
+    ainda mostrar pendência, avisa só o gestor, no privado (nunca cobra no grupo)."""
+    if MODO != "leankeep":
+        return
+    dados = ler(ARQ_DECL, {})
+    if not dados:
+        return
+    agora = datetime.now(FUSO)
+    espera = timedelta(minutes=int(dcfg().get("conferir_apos_min", 60)))
+    limite = timedelta(minutes=int(dcfg().get("avisar_gestor_apos_min", 240)))
+    mudou = False
+    for k, d in dados.items():
+        if d.get("situacao") != "aguardando":
+            continue
+        em = datetime.fromisoformat(d["em"])
+        if agora - em < espera:
+            continue
+        try:
+            cob = CFG["cobrancas"][int(k.split("|")[1])]
+            dia = date.fromisoformat(k.split("|")[0])
+            pend = sem_duplicadas(await buscar_pendentes(cob.get("palavras"), dia, cob.get("excluir")))
+        except Exception as e:
+            log.warning("Conferência de baixa declarada falhou: %s", e)
+            continue
+        if not pend:
+            d["situacao"] = "confirmada"
+            d["confirmada_em"] = agora.isoformat(timespec="minutes")
+            mudou = True
+            log.info("Baixa declarada confirmada no Leankeep: %s", d["cobranca"])
+        elif agora - em >= limite:
+            d["situacao"] = "nao_confirmada"
+            mudou = True
+            L = [f"⚠️ <b>Baixa declarada que o Leankeep ainda não mostra</b>", "",
+                 f"<b>{esc(d['cobranca'])}</b> – dia {dia:%d/%m}",
+                 f"• Declarada por {esc(d['quem'])} às {em:%H:%M} ({esc(d['via'])})",
+                 f"• Depois de {int(limite.total_seconds() // 3600)}h, o Leankeep ainda mostra {len(pend)} pendente(s):"]
+            L += [f"• {esc(legivel(a.descricao))}" for a in pend[:15]]
+            L += ["", "<i>Pode ser só atraso do site ou baixa que não foi salva no app. "
+                      "O grupo NÃO foi cobrado.</i>"]
+            await enviar(context.bot, CFG.get("gestor_chat_id"), "\n".join(L))
+    if mudou:
+        gravar(ARQ_DECL, dados)
+
+
 async def conferir_baixa(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     texto = (msg.text or msg.caption or "").strip()
     if MODO != "leankeep" or not eh_aviso_de_baixa(texto):
         return
+    import time as _t
+    if _t.time() - ULTIMA_CONFERENCIA.get(msg.chat.id, 0) < 30:  # evita consultas repetidas
+        return
+    ULTIMA_CONFERENCIA[msg.chat.id] = _t.time()
+
     alvo = msg.reply_to_message
     if alvo and alvo.message_id in MSG_COBRANCA:
         cobs = [CFG["cobrancas"][MSG_COBRANCA[alvo.message_id]]]
@@ -1434,116 +1537,28 @@ async def conferir_baixa(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cobs = cobrancas_em_andamento()
     if not cobs:
         return
-    u = msg.from_user
-    await agendar_conferencia(context.bot, cobs, u, msg.chat.id,
-                              msg.message_thread_id if msg.is_topic_message else None,
-                              msg.message_id, origem="texto")
-
-
-# ---------------------------------------------------------------------
-#  Conferência com espera: o Leankeep às vezes demora a sincronizar a baixa.
-#  Quem avisa "baixei" (ou toca em "Baixa realizada") recebe um "anotado";
-#  depois de espera_conferencia_min minutos o robô confere:
-#    - tudo baixado  -> ✅ no grupo
-#    - ainda falta   -> ⚠️ SOMENTE no privado do gestor
-# ---------------------------------------------------------------------
-ARQ_CONF_AGENDADAS = DADOS / "conferencias_agendadas.json"
-
-
-def espera_conferencia() -> int:
-    return int(CFG.get("espera_conferencia_min", 15))
-
-
-async def agendar_conferencia(bot, cobs, u, chat_id, topico, msg_id, origem: str):
-    agora = datetime.now(FUSO)
-    idxs = sorted(CFG["cobrancas"].index(c) for c in cobs)
-    lst = ler(ARQ_CONF_AGENDADAS, [])
-    ja = any(c["chat"] == chat_id and c["cobs"] == idxs for c in lst)
-    if not ja:
-        lst.append({"cobs": idxs, "dia": {str(i): data_ref(CFG["cobrancas"][i]).isoformat() for i in idxs},
-                    "uid": u.id if u else None,
-                    "quem": (u.full_name if u else "") or "?",
-                    "primeiro": (u.first_name if u else "") or "",
-                    "chat": chat_id, "topico": topico, "msg": msg_id, "origem": origem,
-                    "marcado_em": agora.isoformat(timespec="minutes"),
-                    "conferir_em": (agora + timedelta(minutes=espera_conferencia())).isoformat(timespec="seconds"),
-                    "tentativas": 0})
-        gravar(ARQ_CONF_AGENDADAS, lst)
-    nomes = ", ".join(esc(c["nome"]) for c in cobs)
-    quem = _mencao_usuario(u) if u else ""
-    await enviar(bot, chat_id,
-                 f"📝 Anotado, {quem}! <b>{nomes}</b>\n"
-                 f"Vou conferir no Leankeep daqui a uns {espera_conferencia()} min "
-                 f"(o app às vezes demora para sincronizar).",
-                 message_thread_id=topico, reply_to_message_id=msg_id)
-
-
-async def processar_conferencias(context: ContextTypes.DEFAULT_TYPE):
-    """Confere as baixas agendadas cujo tempo de espera já passou."""
-    if MODO != "leankeep":
+    quem = msg.from_user.first_name if msg.from_user else ""
+    faltando = []
+    for cob in cobs:
+        try:
+            ativs = sem_duplicadas(await buscar_pendentes(cob.get("palavras"), data_ref(cob),
+                                                          cob.get("excluir")))
+        except Exception as e:
+            await msg.reply_text(f"Não consegui conferir no Leankeep agora: {e}")
+            return
+        if ativs:
+            faltando.append((cob, ativs))
+    if not faltando:
+        await msg.reply_text(texto_tudo_baixado(cobs, quem))
         return
-    lst = ler(ARQ_CONF_AGENDADAS, [])
-    if not lst:
+    if dcfg().get("ativo", True):  # confia na equipe agora e confere depois, em silêncio
+        for cob, _ in faltando:
+            declarar(cob, msg.from_user.full_name if msg.from_user else quem, "escreveu no grupo")
+        await reagir(context.bot, msg)
         return
-    agora = datetime.now(FUSO)
-    g = CFG.get("gestor_chat_id")
-    restantes = []
-    for c in lst:
-        if datetime.fromisoformat(c["conferir_em"]) > agora:
-            restantes.append(c)
-            continue
-        cobs = [(CFG["cobrancas"][i], date.fromisoformat(c["dia"][str(i)]))
-                for i in c["cobs"] if i < len(CFG["cobrancas"])]
-        faltando, erro = [], None
-        for cob, dia in cobs:
-            try:
-                ativs = sem_duplicadas(await buscar_pendentes(cob.get("palavras"), dia, cob.get("excluir")))
-            except Exception as e:
-                erro = e
-                break
-            if ativs:
-                faltando.append((cob, dia, ativs))
-        if erro is not None:
-            c["tentativas"] = c.get("tentativas", 0) + 1
-            if c["tentativas"] < 4:  # tenta de novo nas próximas rodadas
-                restantes.append(c)
-            elif g:
-                await enviar(context.bot, int(g),
-                             f"⚠️ Não consegui conferir no Leankeep a baixa marcada por "
-                             f"<b>{esc(c['quem'])}</b> ({', '.join(esc(cob['nome']) for cob, _ in cobs)}): {esc(erro)}")
-            continue
-        quem_txt = c.get("primeiro") or c["quem"]
-        if not faltando:
-            for cob, _ in cobs:
-                if c["origem"] == "botao":
-                    registrar_resposta(cob, c["quem"], "realizada")
-            nomes = ", ".join(esc(cob["nome"]) for cob, _ in cobs)
-            await enviar(context.bot, c["chat"],
-                         f"✅ Conferi no Leankeep: <b>tudo baixado!</b>\n\n{nomes}\n\nValeu, {esc(quem_txt)}!",
-                         message_thread_id=c.get("topico"), reply_to_message_id=c.get("msg"))
-            continue
-        # pendência: só no privado do gestor
-        for cob, _, _ in faltando:
-            if c["origem"] == "botao":
-                registrar_resposta(cob, c["quem"], "realizada_mas_pendente")
-        if not g:
-            log.warning("Conferência com pendência, mas o gestor não está configurado (/sou_gestor)")
-            continue
-        marcado = datetime.fromisoformat(c["marcado_em"]).strftime("%H:%M")
-        await enviar(context.bot, int(g), texto_pendencia_privado(c["quem"], marcado, faltando))
-    gravar(ARQ_CONF_AGENDADAS, restantes)
-
-
-def texto_pendencia_privado(quem: str, marcado: str, faltando) -> str:
-    L = ["⚠️ <b>Baixa com pendência no Leankeep</b>", "",
-         f"<b>{esc(quem)}</b> marcou como baixado às {marcado}, mas "
-         f"{espera_conferencia()} min depois o Leankeep ainda mostra:"]
-    for cob, dia, ativs in faltando:
-        L += ["", f"<b>{esc(cob['nome'])}</b> — prazo {esc(txt_prazo(cob))} de {dia.strftime('%d/%m')}"]
-        L += [f"• {esc(legivel(a.descricao))}" for a in ativs[:20]]
-        if len(ativs) > 20:
-            L.append(f"• … e mais {len(ativs) - 20}")
-    return "\n".join(L)
+    await enviar(context.bot, msg.chat.id, texto_faltam_baixas(quem, faltando),
+                 message_thread_id=msg.message_thread_id if msg.is_topic_message else None,
+                 reply_to_message_id=msg.message_id)
 
 
 def texto_tudo_baixado(cobs, quem: str) -> str:
@@ -1682,6 +1697,16 @@ async def mensagem_grupo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await oc_mensagem(update, context)
     elif no_topico_leankeep(msg):
         if not await receber_msg_livre(update, context):
+            if msg.photo and MODO == "leankeep" and dcfg().get("foto_conta", True):
+                alvo = msg.reply_to_message
+                cobs = ([CFG["cobrancas"][MSG_COBRANCA[alvo.message_id]]]
+                        if alvo and alvo.message_id in MSG_COBRANCA else cobranca_da_foto())
+                cobs = [c for c in cobs if not declarada(c)]
+                if cobs:
+                    for c in cobs:
+                        declarar(c, msg.from_user.full_name if msg.from_user else "?", "postou foto")
+                    await reagir(context.bot, msg)
+                    return
             await conferir_baixa(update, context)
 
 
@@ -1729,8 +1754,39 @@ async def botao_baixa(update: Update, context: ContextTypes.DEFAULT_TYPE):
     g = CFG.get("gestor_chat_id")
 
     if acao == "r":
-        await q.answer(f"Anotado! Confiro no Leankeep em ~{espera_conferencia()} min.")
-        await agendar_conferencia(context.bot, [cob], u, chat, top, q.message.message_id, origem="botao")
+        await q.answer("Conferindo no Leankeep…")
+        try:
+            pend = sem_duplicadas(await buscar_pendentes(cob.get("palavras"), data_ref(cob), cob.get("excluir")))
+        except Exception as e:
+            await enviar(context.bot, chat, f"Não consegui conferir no Leankeep agora: {esc(e)}",
+                         message_thread_id=top, reply_to_message_id=q.message.message_id)
+            return
+        registrar_resposta(cob, quem, "realizada" if not pend else "realizada_mas_pendente")
+        if pend and dcfg().get("ativo", True):
+            declarar(cob, quem, "botão Baixa realizada")
+            await enviar(context.bot, chat,
+                         f"✅ <b>{esc(cob['nome'])}</b>\n\n{_mencao_usuario(u)} confirmou a baixa. Valeu!\n"
+                         f"<i>O site do Leankeep demora a atualizar: vou conferir mais tarde, sem cobrar o grupo.</i>",
+                         message_thread_id=top, reply_to_message_id=q.message.message_id)
+            return
+        if not pend:
+            await enviar(context.bot, chat,
+                         f"✅ <b>{esc(cob['nome'])}</b>\n\n{_mencao_usuario(u)} confirmou a baixa.\n"
+                         f"Conferi no Leankeep: <b>tudo baixado!</b> Valeu!",
+                         message_thread_id=top, reply_to_message_id=q.message.message_id)
+            return
+        L = [f"⚠️ <b>{esc(cob['nome'])}</b>", "",
+             f"{_mencao_usuario(u)} marcou <b>Baixa realizada</b>, mas no Leankeep ainda falta ({len(pend)}):"]
+        L += [f"• {esc(legivel(a.descricao))}" for a in pend[:20]]
+        if len(pend) > 20:
+            L.append(f"• … e mais {len(pend) - 20}")
+        L += ["", "<i>Confira se a baixa foi salva no app (às vezes fica sem sincronizar).</i>"]
+        await enviar(context.bot, chat, "\n".join(L), message_thread_id=top,
+                     reply_to_message_id=q.message.message_id)
+        if g and CFG.get("avisar_respostas_gestor", True):
+            await enviar(context.bot, int(g), f"⚠️ <b>{esc(quem)}</b> marcou Baixa realizada em "
+                                              f"<b>{esc(cob['nome'])}</b>, mas o Leankeep ainda mostra "
+                                              f"{len(pend)} pendente(s).")
     elif acao == "p":
         await q.answer("Anotado: baixa pendente.")
         registrar_resposta(cob, quem, "pendente")
@@ -2628,7 +2684,7 @@ def _testes():
         t[f"c{i}v"] = f"🚨 {cob['nome']} – vencido"
     t.update({
         "conf_ok": "✅ Resposta ao \"baixei\" (tudo certo)",
-        "conf_falta": "⚠️ Pendência após o \"baixei\" (só no seu privado)",
+        "conf_falta": "⚠️ Resposta ao \"baixei\" (faltando)",
         "atraso": "⚠️ Alerta de baixa em atraso",
         "resumo": "📊 Resumo diário (o que ficou de ontem)",
         "semanal": "📈 Resumo semanal",
@@ -2718,9 +2774,7 @@ async def executar_teste(context, chave, chat_id):
         await enviar(bot, CFG.get("grupo_chat_id"), esc(texto_tudo_baixado(cobs, "Fulano")))
     elif chave == "conf_falta":
         cob = CFG["cobrancas"][0]
-        await enviar(bot, CFG.get("gestor_chat_id"),
-                     texto_pendencia_privado("Fulano", datetime.now(FUSO).strftime("%H:%M"),
-                                             [(cob, data_ref(cob), exemplo_ativs(cob))]))
+        await enviar(bot, CFG.get("grupo_chat_id"), texto_faltam_baixas("Fulano", [(cob, exemplo_ativs(cob))]))
     elif chave == "atraso":
         cob = next((c for c in CFG.get("cobrancas", []) if c.get("avisar_baixa_atrasada", True)),
                    CFG["cobrancas"][0])
@@ -3036,6 +3090,9 @@ async def montar_lembrete(lem: dict, exemplo: bool = False):
     cob = cobranca_do_lembrete(lem)
     if not cob or MODO != "leankeep":
         return texto_lembrete(lem), cob
+    if not exemplo and declarada(cob):
+        log.info("Lembrete '%s' não enviado: baixa declarada", lem.get("texto"))
+        return None, cob
     if exemplo:
         return texto_lembrete(lem, exemplo_ativs(cob)), cob
     try:

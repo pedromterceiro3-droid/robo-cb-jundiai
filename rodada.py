@@ -281,11 +281,6 @@ async def rodada():
                 await B.vigiar_fila(ctx(app))
             except Exception:
                 log.exception("Erro na fila da Tagme")
-        # "baixei"/"Baixa realizada": confere depois do tempo de espera
-        try:
-            await B.processar_conferencias(ctx(app))
-        except Exception:
-            log.exception("Erro nas conferências agendadas")
         # baixas em atraso (a cada ~10 min)
         ult_v = estado.get("vigiar")
         if not ult_v or agora - datetime.fromisoformat(ult_v) >= timedelta(minutes=9):
@@ -294,6 +289,10 @@ async def rodada():
             except Exception:
                 log.exception("Erro ao vigiar atrasos")
             estado["vigiar"] = agora.isoformat(timespec="seconds")
+            try:
+                await B.verificar_declaradas(ctx(app))
+            except Exception:
+                log.exception("Erro ao conferir baixas declaradas")
         # espera tarefas que ficaram rodando (ex.: /testar)
         pend = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
         if pend:

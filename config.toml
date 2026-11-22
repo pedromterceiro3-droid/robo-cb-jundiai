@@ -25,15 +25,6 @@ copiar_cobrancas_gestor = true
 # Palavras que, escritas no tópico Leankeep diário, fazem o robô conferir a baixa no Leankeep
 palavras_baixa = ["baixei", "baixado", "baixada", "baixamos", "feito", "concluído", "concluída", "finalizado", "pronto", "realizado"]
 
-# Depois do "baixei" (ou do botão "Baixa realizada"), espera X minutos antes de conferir no
-# Leankeep (o app às vezes demora a sincronizar). Tudo baixado: ✅ no grupo.
-# Ainda faltando: aviso SOMENTE no privado do gestor.
-espera_conferencia_min = 15
-
-# Nas cobranças do grupo, listar cada atividade pendente? false = forma macro (um item por plano, com a quantidade)
-# (dá para ligar numa cobrança específica com listar_atividades = true no bloco dela)
-listar_atividades = false
-
 # Trechos removidos do fim das descrições do Leankeep (ex.: " - JUN")
 remover_sufixos = [" - JUN"]
 
@@ -258,4 +249,17 @@ escuta_segundos = 90
 [avisos]
 mencoes = true
 meu_usuario = ""
+
+# ------------------------------------------------------------
+# BAIXA DECLARADA PELA EQUIPE (o site do Leankeep demora a atualizar)
+#   Quando alguém toca "✅ Baixa realizada", escreve "baixei" ou posta FOTO no tópico Leankeep
+#   durante uma cobrança, o robô para de cobrar aquela tarefa no grupo naquele dia.
+#   Depois ele confere sozinho no Leankeep. Se mesmo assim continuar pendente,
+#   avisa SÓ você, no privado.
+# ------------------------------------------------------------
+[baixa_declarada]
+ativo = true
+foto_conta = true              # foto postada no tópico durante a cobrança vale como "baixei"
+conferir_apos_min = 60         # começa a conferir no Leankeep depois de 1h
+avisar_gestor_apos_min = 240   # se depois de 4h ainda estiver pendente, avisa você no privado
 
