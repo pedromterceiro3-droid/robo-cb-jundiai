@@ -118,6 +118,9 @@ palavras_abrem = ["ocorrência", "manutenção", "danific", "quebr", "vaza", "qu
                   "entup", "consert", "concert", "pifou", "pifad",
                   "não funciona", "não está funcionando", "sem funcionar"]
 palavras_perguntam = ["verific", "avali", "revis", "troca", "solt", "parou", "parad"]
+# Abrir na mão: responda (marque) a foto/mensagem escrevendo "abrir ocorrência", "isso é ocorrência"…
+# Vira ocorrência mesmo sem palavra-chave. "Não é ocorrência" não abre.
+frases_abrir = ["ocorr", "abrir chamado", "abre chamado", "abrir os", "abre os"]
 
 # ------------------------------------------------------------
 # RESUMO SEMANAL (privado do gestor) — baixas no prazo x em atraso

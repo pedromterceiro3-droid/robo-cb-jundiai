@@ -1064,6 +1064,9 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if oc_andamento(dados, num, quem):
                 await oc_avisar(context.bot, msg, f"🟡 Ocorrência #{num} em andamento ({esc(quem)}).",
                                 reply_markup=botao_oc(num, dados["itens"][num]))
+        elif not num and pede_abrir(texto) and no_topico_ocorrencias(msg) and not no_topico_saida(msg) \
+                and not (alvo.from_user and alvo.from_user.is_bot):
+            await oc_abrir_por_resposta(context.bot, dados, msg, alvo, quem)
         return  # outras respostas são só conversa sobre a ocorrência
     if no_topico_saida(msg):
         return  # no tópico Keepbot só valem respostas às mensagens do robô
@@ -1168,6 +1171,56 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await oc_registrar(context.bot, dados, item)
 
 
+def pede_abrir(texto: str) -> bool:
+    """Resposta (marcando a foto) pedindo para abrir: "abrir ocorrência", "isso é ocorrência"…"""
+    t = " " + " ".join(re.sub(r"[^A-Z0-9 ]", " ", normalizar(texto)).split())
+    if any(n in t for n in (" NAO E OCORR", " NAO EH OCORR", " NAO VIRA OCORR", " NAO PRECISA",
+                            " NAO ABR", " SEM OCORR")):
+        return False
+    frases = oc_cfg().get("frases_abrir", ["ocorr", "abrir chamado", "abre chamado", "abrir os", "abre os"])
+    return any(" " + " ".join(re.sub(r"[^A-Z0-9 ]", " ", normalizar(f)).split()) in t for f in frases)
+
+
+async def oc_abrir_por_resposta(bot, dados: dict, msg, alvo, quem: str):
+    """Alguém marcou (respondeu) a foto/mensagem e pediu para abrir: vira ocorrência mesmo sem palavra-chave."""
+    chat = msg.chat.id
+    # a foto pode estar guardada como "candidata" (com outras fotos/texto da mesma pessoa) ou numa pergunta
+    base = None
+    for k, c in list(dados.get("candidatas", {}).items()):
+        if alvo.message_id in c["msg_ids"] and k.startswith(f"{chat}:"):
+            base = dados["candidatas"].pop(k)
+            break
+    for k, pg in list(dados.get("perguntas", {}).items()):
+        if alvo.message_id in pg["msg_ids"] and pg["chat_id"] == chat:
+            base = dados["perguntas"].pop(k)
+            if pg.get("msg_pergunta"):
+                try:
+                    await bot.delete_message(chat, pg["msg_pergunta"])
+                except Exception:
+                    pass
+            break
+    autor = alvo.from_user.full_name if alvo.from_user else quem
+    enviada = alvo.date.astimezone(FUSO) if alvo.date else datetime.now(FUSO)
+    texto_alvo = (alvo.text or alvo.caption or "").strip()
+    if base:
+        ids, texto_alvo, foto, criada, album = (base["msg_ids"], base.get("texto") or texto_alvo,
+                                                base.get("foto"), base["criada"], base.get("album"))
+    else:
+        ids, foto, criada, album = ([alvo.message_id], bool(alvo.photo),
+                                    enviada.isoformat(timespec="minutes"), alvo.media_group_id)
+    pedido = (msg.text or msg.caption or "").strip()
+    texto = texto_alvo or pedido  # foto sem legenda: usa o que foi escrito na resposta
+    if texto_alvo and len(pedido) > 25:
+        texto = f"{texto_alvo} – {pedido}"
+    item = {"chat_id": chat, "topico": msg.message_thread_id if msg.is_topic_message else 0,
+            "msg_ids": ids, "album": album, "autor": autor,
+            "autor_id": alvo.from_user.id if alvo.from_user else None, "texto": texto, "foto": bool(foto),
+            "criada": criada, "ultima_msg": enviada.isoformat(timespec="seconds"), "resolvida": None}
+    if autor != quem:
+        item["aberta_por"] = quem
+    await oc_registrar(bot, dados, item)
+
+
 async def oc_registrar(bot, dados: dict, item: dict) -> str:
     """Dá número à ocorrência, grava e confirma (no Keepbot ou respondendo a própria foto)."""
     dados["seq"] += 1
@@ -1178,6 +1231,8 @@ async def oc_registrar(bot, dados: dict, item: dict) -> str:
     if not oc_cfg().get("confirmar_registro", True):
         return num
     quem, texto = item["autor"], item["texto"]
+    if item.get("aberta_por"):
+        quem += f" (aberta por {item['aberta_por']})"
     if saida_separada():
         resumo = esc(texto[:120] + ("…" if len(texto) > 120 else "")) if texto else "(só foto)"
         link = f"<a href=\"{oc_link(item)}\">{'📷 ver foto' if item.get('foto') else '↗ ver mensagem'}</a>"
