@@ -253,17 +253,29 @@ async def buscar_pendentes(palavras: list[str] | None = None, dia: date | None =
         return list(EXEMPLO.get())
     d = dia or hoje()
     dias_atras = int(CFG.get("incluir_atrasadas_dias", 0))
-    try:
-        ativs = await asyncio.wait_for(
-            asyncio.to_thread(LK.pendentes, d - timedelta(days=dias_atras), d, CFG.get("unidade")),
-            timeout=150)
-    except asyncio.TimeoutError:
-        raise RuntimeError("o Leankeep demorou mais de 2 minutos para responder.")
+    usou_agenda = False
+    if CFG.get("fonte_leankeep", "agenda") == "agenda":
+        # mesma fonte da tela Agenda do site (atualiza bem mais rápido que o Backlog)
+        try:
+            ativs = []
+            for k in range(dias_atras, -1, -1):
+                ativs += await asyncio.wait_for(
+                    asyncio.to_thread(LK.agenda, d - timedelta(days=k), False, CFG.get("unidade")), timeout=120)
+            usou_agenda = True
+        except Exception as e:
+            log.warning("Agenda do Leankeep falhou (%s); usando o Backlog", e)
+    if not usou_agenda:
+        try:
+            ativs = await asyncio.wait_for(
+                asyncio.to_thread(LK.pendentes, d - timedelta(days=dias_atras), d, CFG.get("unidade")),
+                timeout=150)
+        except asyncio.TimeoutError:
+            raise RuntimeError("o Leankeep demorou mais de 2 minutos para responder.")
     if palavras:
         chaves = [normalizar(p) for p in palavras]
         ativs = [a for a in ativs if any(c in normalizar(a.descricao + " " + a.plano)
                                          for c in chaves)]
-    if ativs and CFG.get("cruzar_com_historico", True):
+    if ativs and not usou_agenda and CFG.get("cruzar_com_historico", True):
         # o "pendente" do Leankeep às vezes demora a sair mesmo com a baixa já no Histórico:
         # o que já aparece como baixado no Histórico não é cobrado
         try:

@@ -12,6 +12,7 @@ import httpx
 log = logging.getLogger("robo")
 AUTH_URL = "https://auth.lkp.app.br/v1/auth"
 API_URL = "https://lighthousev2.lkp.app.br"
+AGENDA_URL = "https://las.lkp.app.br/v1/Agenda/planoAplicacao"   # a mesma fonte da tela Agenda do site
 
 # Códigos de status usados pelo Leankeep
 STATUS = {1: "atrasada", 2: "pendente", 3: "realizada", 4: "aguardando aprovação",
@@ -182,6 +183,55 @@ class Leankeep:
             if r.status_code >= 400:
                 raise RuntimeError(f"Leankeep respondeu {r.status_code} em {caminho}: {r.text[:300]}")
             return r.json()
+
+    def _get_url(self, url: str, params: dict):
+        if not self.token:
+            self.login()
+        for tentativa in range(2):
+            r = self.http.get(url, params=params,
+                              headers={"Authorization": f"Bearer {self.token}", "EmpresaId": self.empresa_id})
+            log.info("Leankeep: %s -> %s", url.split(".br")[-1], r.status_code)
+            if r.status_code == 401 and tentativa == 0:
+                self.renovar()
+                continue
+            if r.status_code >= 400:
+                raise RuntimeError(f"Leankeep respondeu {r.status_code} na Agenda: {r.text[:300]}")
+            return r.json()
+
+    def agenda(self, dia: date, baixadas: bool, unidade: str | None = None) -> list[Atividade]:
+        """O que a tela AGENDA do site mostra no dia (aba Pendentes ou Baixadas), por plano."""
+        import unicodedata
+
+        def sem_acento(t):
+            return "".join(c for c in unicodedata.normalize("NFD", str(t or "").upper())
+                           if unicodedata.category(c) != "Mn")
+        resp = self._get_url(AGENDA_URL, {
+            "SelectedDate": f"{dia.isoformat()}T03:00:00.000Z",  # meia-noite de Brasília
+            "Baixadas": "true" if baixadas else "false", "DiasAdicionais": 0, "EmpresaId": self.empresa_id})
+        itens = resp if isinstance(resp, list) else _lista(resp)
+        alvo = sem_acento(unidade).strip() if unidade else ""
+        saida = []
+        for g in itens:
+            if not isinstance(g, dict):
+                continue
+            if alvo and alvo not in sem_acento(g.get("siteNome")):
+                continue
+            if not baixadas and g.get("realizada"):
+                continue
+            nome = str(g.get("planoAtividadeNome") or "").strip()
+            saida.append(Atividade(
+                numero=f"ag{g.get('aplicacaoPlanoAtividade', '')}",
+                descricao=nome + (f" ({g['qtdAtividades']} atividades)" if (g.get("qtdAtividades") or 0) > 1 else ""),
+                unidade=str(g.get("siteNome", "")),
+                plano=nome,
+                data=str(g.get("primeiraDataHora", "")),
+                status=STATUS.get(g.get("status"), "pendente"),
+                executores=[e.get("nome", "") for e in g.get("executores", []) or [] if e.get("nome")],
+                realizada=str(g.get("primeiraDataHora", "")) if baixadas else None,
+            ))
+        log.info("Leankeep (Agenda %s %s): %s plano(s) da unidade", dia, "baixadas" if baixadas else "pendentes",
+                 len(saida))
+        return saida
 
     # ---------- consultas ----------
     def pendentes(self, inicio: date, fim: date, unidade: str | None = None) -> list[Atividade]:
