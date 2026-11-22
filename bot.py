@@ -688,6 +688,7 @@ def agendar(app: Application):
     for nome, func, h, dias, janela in envios_diarios():
         jq.run_daily(registrar_envio(nome, func), h, days=dias, name=nome, **ATRASO_OK)
     jq.run_repeating(vigiar_atrasos, interval=600, first=60, name="vigiar_atrasos")
+    jq.run_repeating(processar_conferencias, interval=60, first=30, name="conferencias")
     if tg_cfg().get("ativo", True):
         jq.run_repeating(vigiar_fila, interval=int(tg_cfg().get("intervalo_fila_seg", 60)),
                          first=20, name="tagme_fila")
@@ -1412,11 +1413,6 @@ async def conferir_baixa(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = (msg.text or msg.caption or "").strip()
     if MODO != "leankeep" or not eh_aviso_de_baixa(texto):
         return
-    import time as _t
-    if _t.time() - ULTIMA_CONFERENCIA.get(msg.chat.id, 0) < 30:  # evita consultas repetidas
-        return
-    ULTIMA_CONFERENCIA[msg.chat.id] = _t.time()
-
     alvo = msg.reply_to_message
     if alvo and alvo.message_id in MSG_COBRANCA:
         cobs = [CFG["cobrancas"][MSG_COBRANCA[alvo.message_id]]]
@@ -1424,23 +1420,116 @@ async def conferir_baixa(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cobs = cobrancas_em_andamento()
     if not cobs:
         return
-    quem = msg.from_user.first_name if msg.from_user else ""
-    faltando = []
-    for cob in cobs:
-        try:
-            ativs = sem_duplicadas(await buscar_pendentes(cob.get("palavras"), data_ref(cob),
-                                                          cob.get("excluir")))
-        except Exception as e:
-            await msg.reply_text(f"Não consegui conferir no Leankeep agora: {e}")
-            return
-        if ativs:
-            faltando.append((cob, ativs))
-    if not faltando:
-        await msg.reply_text(texto_tudo_baixado(cobs, quem))
+    u = msg.from_user
+    await agendar_conferencia(context.bot, cobs, u, msg.chat.id,
+                              msg.message_thread_id if msg.is_topic_message else None,
+                              msg.message_id, origem="texto")
+
+
+# ---------------------------------------------------------------------
+#  Conferência com espera: o Leankeep às vezes demora a sincronizar a baixa.
+#  Quem avisa "baixei" (ou toca em "Baixa realizada") recebe um "anotado";
+#  depois de espera_conferencia_min minutos o robô confere:
+#    - tudo baixado  -> ✅ no grupo
+#    - ainda falta   -> ⚠️ SOMENTE no privado do gestor
+# ---------------------------------------------------------------------
+ARQ_CONF_AGENDADAS = DADOS / "conferencias_agendadas.json"
+
+
+def espera_conferencia() -> int:
+    return int(CFG.get("espera_conferencia_min", 15))
+
+
+async def agendar_conferencia(bot, cobs, u, chat_id, topico, msg_id, origem: str):
+    agora = datetime.now(FUSO)
+    idxs = sorted(CFG["cobrancas"].index(c) for c in cobs)
+    lst = ler(ARQ_CONF_AGENDADAS, [])
+    ja = any(c["chat"] == chat_id and c["cobs"] == idxs for c in lst)
+    if not ja:
+        lst.append({"cobs": idxs, "dia": {str(i): data_ref(CFG["cobrancas"][i]).isoformat() for i in idxs},
+                    "uid": u.id if u else None,
+                    "quem": (u.full_name if u else "") or "?",
+                    "primeiro": (u.first_name if u else "") or "",
+                    "chat": chat_id, "topico": topico, "msg": msg_id, "origem": origem,
+                    "marcado_em": agora.isoformat(timespec="minutes"),
+                    "conferir_em": (agora + timedelta(minutes=espera_conferencia())).isoformat(timespec="seconds"),
+                    "tentativas": 0})
+        gravar(ARQ_CONF_AGENDADAS, lst)
+    nomes = ", ".join(esc(c["nome"]) for c in cobs)
+    quem = _mencao_usuario(u) if u else ""
+    await enviar(bot, chat_id,
+                 f"📝 Anotado, {quem}! <b>{nomes}</b>\n"
+                 f"Vou conferir no Leankeep daqui a uns {espera_conferencia()} min "
+                 f"(o app às vezes demora para sincronizar).",
+                 message_thread_id=topico, reply_to_message_id=msg_id)
+
+
+async def processar_conferencias(context: ContextTypes.DEFAULT_TYPE):
+    """Confere as baixas agendadas cujo tempo de espera já passou."""
+    if MODO != "leankeep":
         return
-    await enviar(context.bot, msg.chat.id, texto_faltam_baixas(quem, faltando),
-                 message_thread_id=msg.message_thread_id if msg.is_topic_message else None,
-                 reply_to_message_id=msg.message_id)
+    lst = ler(ARQ_CONF_AGENDADAS, [])
+    if not lst:
+        return
+    agora = datetime.now(FUSO)
+    g = CFG.get("gestor_chat_id")
+    restantes = []
+    for c in lst:
+        if datetime.fromisoformat(c["conferir_em"]) > agora:
+            restantes.append(c)
+            continue
+        cobs = [(CFG["cobrancas"][i], date.fromisoformat(c["dia"][str(i)]))
+                for i in c["cobs"] if i < len(CFG["cobrancas"])]
+        faltando, erro = [], None
+        for cob, dia in cobs:
+            try:
+                ativs = sem_duplicadas(await buscar_pendentes(cob.get("palavras"), dia, cob.get("excluir")))
+            except Exception as e:
+                erro = e
+                break
+            if ativs:
+                faltando.append((cob, dia, ativs))
+        if erro is not None:
+            c["tentativas"] = c.get("tentativas", 0) + 1
+            if c["tentativas"] < 4:  # tenta de novo nas próximas rodadas
+                restantes.append(c)
+            elif g:
+                await enviar(context.bot, int(g),
+                             f"⚠️ Não consegui conferir no Leankeep a baixa marcada por "
+                             f"<b>{esc(c['quem'])}</b> ({', '.join(esc(cob['nome']) for cob, _ in cobs)}): {esc(erro)}")
+            continue
+        quem_txt = c.get("primeiro") or c["quem"]
+        if not faltando:
+            for cob, _ in cobs:
+                if c["origem"] == "botao":
+                    registrar_resposta(cob, c["quem"], "realizada")
+            nomes = ", ".join(esc(cob["nome"]) for cob, _ in cobs)
+            await enviar(context.bot, c["chat"],
+                         f"✅ Conferi no Leankeep: <b>tudo baixado!</b>\n\n{nomes}\n\nValeu, {esc(quem_txt)}!",
+                         message_thread_id=c.get("topico"), reply_to_message_id=c.get("msg"))
+            continue
+        # pendência: só no privado do gestor
+        for cob, _, _ in faltando:
+            if c["origem"] == "botao":
+                registrar_resposta(cob, c["quem"], "realizada_mas_pendente")
+        if not g:
+            log.warning("Conferência com pendência, mas o gestor não está configurado (/sou_gestor)")
+            continue
+        marcado = datetime.fromisoformat(c["marcado_em"]).strftime("%H:%M")
+        await enviar(context.bot, int(g), texto_pendencia_privado(c["quem"], marcado, faltando))
+    gravar(ARQ_CONF_AGENDADAS, restantes)
+
+
+def texto_pendencia_privado(quem: str, marcado: str, faltando) -> str:
+    L = ["⚠️ <b>Baixa com pendência no Leankeep</b>", "",
+         f"<b>{esc(quem)}</b> marcou como baixado às {marcado}, mas "
+         f"{espera_conferencia()} min depois o Leankeep ainda mostra:"]
+    for cob, dia, ativs in faltando:
+        L += ["", f"<b>{esc(cob['nome'])}</b> — prazo {esc(txt_prazo(cob))} de {dia.strftime('%d/%m')}"]
+        L += [f"• {esc(legivel(a.descricao))}" for a in ativs[:20]]
+        if len(ativs) > 20:
+            L.append(f"• … e mais {len(ativs) - 20}")
+    return "\n".join(L)
 
 
 def texto_tudo_baixado(cobs, quem: str) -> str:
@@ -1626,32 +1715,8 @@ async def botao_baixa(update: Update, context: ContextTypes.DEFAULT_TYPE):
     g = CFG.get("gestor_chat_id")
 
     if acao == "r":
-        await q.answer("Conferindo no Leankeep…")
-        try:
-            pend = sem_duplicadas(await buscar_pendentes(cob.get("palavras"), data_ref(cob), cob.get("excluir")))
-        except Exception as e:
-            await enviar(context.bot, chat, f"Não consegui conferir no Leankeep agora: {esc(e)}",
-                         message_thread_id=top, reply_to_message_id=q.message.message_id)
-            return
-        registrar_resposta(cob, quem, "realizada" if not pend else "realizada_mas_pendente")
-        if not pend:
-            await enviar(context.bot, chat,
-                         f"✅ <b>{esc(cob['nome'])}</b>\n\n{_mencao_usuario(u)} confirmou a baixa.\n"
-                         f"Conferi no Leankeep: <b>tudo baixado!</b> Valeu!",
-                         message_thread_id=top, reply_to_message_id=q.message.message_id)
-            return
-        L = [f"⚠️ <b>{esc(cob['nome'])}</b>", "",
-             f"{_mencao_usuario(u)} marcou <b>Baixa realizada</b>, mas no Leankeep ainda falta ({len(pend)}):"]
-        L += [f"• {esc(legivel(a.descricao))}" for a in pend[:20]]
-        if len(pend) > 20:
-            L.append(f"• … e mais {len(pend) - 20}")
-        L += ["", "<i>Confira se a baixa foi salva no app (às vezes fica sem sincronizar).</i>"]
-        await enviar(context.bot, chat, "\n".join(L), message_thread_id=top,
-                     reply_to_message_id=q.message.message_id)
-        if g and CFG.get("avisar_respostas_gestor", True):
-            await enviar(context.bot, int(g), f"⚠️ <b>{esc(quem)}</b> marcou Baixa realizada em "
-                                              f"<b>{esc(cob['nome'])}</b>, mas o Leankeep ainda mostra "
-                                              f"{len(pend)} pendente(s).")
+        await q.answer(f"Anotado! Confiro no Leankeep em ~{espera_conferencia()} min.")
+        await agendar_conferencia(context.bot, [cob], u, chat, top, q.message.message_id, origem="botao")
     elif acao == "p":
         await q.answer("Anotado: baixa pendente.")
         registrar_resposta(cob, quem, "pendente")
@@ -2549,7 +2614,7 @@ def _testes():
         t[f"c{i}v"] = f"🚨 {cob['nome']} – vencido"
     t.update({
         "conf_ok": "✅ Resposta ao \"baixei\" (tudo certo)",
-        "conf_falta": "⚠️ Resposta ao \"baixei\" (faltando)",
+        "conf_falta": "⚠️ Pendência após o \"baixei\" (só no seu privado)",
         "atraso": "⚠️ Alerta de baixa em atraso",
         "resumo": "📊 Resumo diário (o que ficou de ontem)",
         "semanal": "📈 Resumo semanal",
@@ -2639,7 +2704,9 @@ async def executar_teste(context, chave, chat_id):
         await enviar(bot, CFG.get("grupo_chat_id"), esc(texto_tudo_baixado(cobs, "Fulano")))
     elif chave == "conf_falta":
         cob = CFG["cobrancas"][0]
-        await enviar(bot, CFG.get("grupo_chat_id"), texto_faltam_baixas("Fulano", [(cob, exemplo_ativs(cob))]))
+        await enviar(bot, CFG.get("gestor_chat_id"),
+                     texto_pendencia_privado("Fulano", datetime.now(FUSO).strftime("%H:%M"),
+                                             [(cob, data_ref(cob), exemplo_ativs(cob))]))
     elif chave == "atraso":
         cob = next((c for c in CFG.get("cobrancas", []) if c.get("avisar_baixa_atrasada", True)),
                    CFG["cobrancas"][0])

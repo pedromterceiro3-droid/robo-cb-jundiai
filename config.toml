@@ -25,6 +25,11 @@ copiar_cobrancas_gestor = true
 # Palavras que, escritas no tópico Leankeep diário, fazem o robô conferir a baixa no Leankeep
 palavras_baixa = ["baixei", "baixado", "baixada", "baixamos", "feito", "concluído", "concluída", "finalizado", "pronto", "realizado"]
 
+# Depois do "baixei" (ou do botão "Baixa realizada"), espera X minutos antes de conferir no
+# Leankeep (o app às vezes demora a sincronizar). Tudo baixado: ✅ no grupo.
+# Ainda faltando: aviso SOMENTE no privado do gestor.
+espera_conferencia_min = 15
+
 # Trechos removidos do fim das descrições do Leankeep (ex.: " - JUN")
 remover_sufixos = [" - JUN"]
 
