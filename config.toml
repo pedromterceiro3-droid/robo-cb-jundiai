@@ -30,6 +30,10 @@ palavras_baixa = ["baixei", "baixado", "baixada", "baixamos", "feito", "concluí
 # Ainda faltando: aviso SOMENTE no privado do gestor.
 espera_conferencia_min = 15
 
+# Nas cobranças do grupo, listar cada atividade pendente? false = forma macro (um item por plano, com a quantidade)
+# (dá para ligar numa cobrança específica com listar_atividades = true no bloco dela)
+listar_atividades = false
+
 # Trechos removidos do fim das descrições do Leankeep (ex.: " - JUN")
 remover_sufixos = [" - JUN"]
 

@@ -377,6 +377,17 @@ def bloco_atividades(ativs, cads, limite=25) -> list[str]:
     return linhas
 
 
+def bloco_planos(ativs) -> list[str]:
+    """Agrupa pelo plano de atividades do Leankeep: '• CHECKLIST: SALÕES — 25 atividade(s)'."""
+    contagem: dict[str, int] = {}
+    for a in ativs:
+        nome = (getattr(a, "plano", "") or "").strip()
+        if not nome or nome == "-":
+            nome = "Outras atividades"
+        contagem[nome] = contagem.get(nome, 0) + 1
+    return [f"• {esc(n)} — <b>{q}</b> atividade(s)" for n, q in contagem.items()]
+
+
 def lista_por_cobranca(ativs, dia: date, cads) -> list[str]:
     """Agrupa as atividades pela cobrança (Leituras, Banheiros…), com semáforo de prazo."""
     restantes = sem_duplicadas(ativs)
@@ -437,7 +448,10 @@ async def cobrar_leankeep(context, cob, rodada):
     cor, situacao = semaforo(cob, data_ref(cob))
     linhas = [topo.replace("Ainda falta", f"{cor} {len(ativs)} atividade(s) — ainda falta")
                   .replace("Continua pendente", f"🔴 {len(ativs)} atividade(s) — continua pendente")]
-    linhas += bloco_atividades(ativs, cads, limite=30)
+    if cob.get("listar_atividades", CFG.get("listar_atividades", False)):
+        linhas += bloco_atividades(ativs, cads, limite=30)
+    else:  # forma macro, igual ao app: um item por plano de atividades, com a quantidade
+        linhas += bloco_planos(ativs)
     if cob.get("marcar"):
         linhas += ["", marcacoes(cob["marcar"])]
     texto = "\n".join(linhas)
