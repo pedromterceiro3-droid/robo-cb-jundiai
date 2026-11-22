@@ -275,6 +275,11 @@ async def rodada():
     try:
         await processar_mensagens(app, estado)
         await enviar_marcados(app, estado, agora)
+        # rotinas do bar
+        try:
+            await B.BAR.tick(ctx(app))
+        except Exception:
+            log.exception("Erro nas rotinas do bar")
         # fila da Tagme
         if B.TG and B.tg_cfg().get("ativo", True):
             try:

@@ -30,6 +30,7 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, filters)
 
 from leankeep import Atividade, Leankeep
+import bar as BAR
 from tagme import Tagme
 
 PASTA = Path(__file__).parent
@@ -720,6 +721,7 @@ def agendar(app: Application):
         jq.run_daily(registrar_envio(nome, func), h, days=dias, name=nome, **ATRASO_OK)
     jq.run_repeating(vigiar_atrasos, interval=600, first=60, name="vigiar_atrasos")
     jq.run_repeating(verificar_declaradas, interval=900, first=120, name="verificar_declaradas")
+    jq.run_repeating(BAR.tick, interval=300, first=90, name="bar")
     if tg_cfg().get("ativo", True):
         jq.run_repeating(vigiar_fila, interval=int(tg_cfg().get("intervalo_fila_seg", 60)),
                          first=20, name="tagme_fila")
@@ -1132,7 +1134,10 @@ async def oc_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # atualiza a mensagem onde o botão foi tocado
     try:
         texto_atual = q.message.text or ""
-        if texto_atual.startswith("📋"):  # é a lista: redesenha inteira
+        if texto_atual.startswith("#"):  # cartão da lista: atualiza só esta ocorrência
+            await q.edit_message_text(limpar_texto(oc_cartao(o)), parse_mode=ParseMode.HTML,
+                                      reply_markup=botao_oc(num, o), disable_web_page_preview=True)
+        elif texto_atual.startswith("📋"):  # lista antiga (tudo numa mensagem): redesenha inteira
             texto, teclado = oc_texto_lista()
             await q.edit_message_text(limpar_texto(texto), parse_mode=ParseMode.HTML,
                                       reply_markup=teclado, disable_web_page_preview=True)
@@ -1197,14 +1202,54 @@ def oc_texto_lista() -> tuple[str, InlineKeyboardMarkup | None]:
     return "\n".join(L), teclado
 
 
+def oc_cartao(o: dict) -> str:
+    """Uma ocorrência = uma mensagem, com os botões logo abaixo dela."""
+    agora = datetime.now(FUSO)
+    criada = datetime.fromisoformat(o["criada"])
+    dias = (agora.date() - criada.date()).days
+    idade = "hoje" if dias == 0 else ("há 1 dia" if dias == 1 else f"há {dias} dias")
+    texto = esc(o["texto"][:300] + ("…" if len(o["texto"]) > 300 else "")) or "(só foto)"
+    link = f"<a href=\"{oc_link(o)}\">{'📷 ver foto' if o.get('foto') else '↗ ver mensagem'}</a>"
+    L = [f"<b>#{o['num']}</b> {oc_situacao(o)}" + ("" if o.get("resolvida") else f" · {idade}"),
+         texto,
+         f"<i>{esc(o['autor'])} · {criada.strftime('%d/%m %H:%M')}</i> · {link}"]
+    if o.get("resolvida"):
+        r = o["resolvida"]
+        L.append(f"<i>Concluída por {esc(r['por'])} em {datetime.fromisoformat(r['em']):%d/%m %H:%M}</i>")
+    elif o.get("andamento"):
+        L.append(f"<i>Em andamento com {esc(o['andamento']['por'])}</i>")
+    return "\n".join(L)
+
+
+def oc_cabecalho_lista() -> str:
+    texto, _ = oc_texto_lista()
+    # só o topo da lista (título, totais e ontem); as ocorrências vão uma por mensagem
+    topo = texto.split("\n\n<b>#", 1)[0]
+    return topo.replace("\n\n<i>Use os botões abaixo para atualizar cada ocorrência.</i>", "")
+
+
+async def oc_enviar_lista(bot, chat, thread=None):
+    if not chat:
+        return
+    dados = oc_dados()
+    abertas = sorted([o for o in dados["itens"].values() if not o.get("resolvida")], key=lambda o: o["num"])
+    cab = oc_cabecalho_lista()
+    if abertas:
+        cab += "\n\n<i>Cada ocorrência vem a seguir, com os botões logo abaixo.</i>"
+    await enviar(bot, chat, cab, message_thread_id=thread)
+    for o in abertas[:40]:
+        await enviar(bot, chat, oc_cartao(o), message_thread_id=thread, reply_markup=botao_oc(o["num"], o))
+    if len(abertas) > 40:
+        await enviar(bot, chat, f"… e mais {len(abertas) - 40} ocorrências. Use /pendencias para ver.",
+                     message_thread_id=thread)
+
+
 async def oc_publicar_lista(context: ContextTypes.DEFAULT_TYPE):
-    texto, teclado = oc_texto_lista()
-    extra = {"reply_markup": teclado} if teclado else {}
     c, t = oc_saida()
     if c:
-        await enviar(context.bot, c, texto, message_thread_id=t or None, **extra)
+        await oc_enviar_lista(context.bot, c, t or None)
     if CFG.get("gestor_chat_id"):
-        await enviar(context.bot, CFG["gestor_chat_id"], texto, **extra)
+        await oc_enviar_lista(context.bot, CFG["gestor_chat_id"])
 
 
 async def cmd_configurar_ocorrencias(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1241,11 +1286,9 @@ async def cmd_configurar_keepbot(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def cmd_pendencias(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    texto, teclado = oc_texto_lista()
     msg = update.message
-    await enviar(context.bot, update.effective_chat.id, texto,
-                 message_thread_id=msg.message_thread_id if msg.is_topic_message else None,
-                 **({"reply_markup": teclado} if teclado else {}))
+    await oc_enviar_lista(context.bot, update.effective_chat.id,
+                          msg.message_thread_id if msg.is_topic_message else None)
 
 
 async def cmd_excluir(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1748,6 +1791,11 @@ async def mensagem_grupo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await avisar_mencao(update, context)
     except Exception:
         log.exception("Erro ao verificar menção")
+    try:
+        if await BAR.on_mensagem(update, context):
+            return  # mensagem do grupo do bar
+    except Exception:
+        log.exception("Erro nas rotinas do bar")
     if no_topico_ocorrencias(msg) or no_topico_saida(msg):
         await oc_mensagem(update, context)
     elif no_topico_leankeep(msg):
@@ -2709,6 +2757,9 @@ COMANDOS_TXT = (
     "• /reservas – reservas de amanhã (/reservas hoje, /reservas 25/12)\n"
     "• /alerta – manda um alerta 🚨 para o tópico que você escolher\n"
     "• /reenviar – manda de novo algo que não chegou\n"
+    "• /bar – situação das rotinas do bar + farol (no privado)\n"
+    "• /farol – publica o farol do bar no tópico General (/farol aqui = só para você)\n"
+    "• /topico_bar CHAVE – dentro de cada tópico do grupo do bar, para configurar\n"
     "• /testar – este menu de teste\n\n"
     "<b>Consulta</b>\n"
     "• /agenda – horários das cobranças\n"
@@ -2855,10 +2906,8 @@ async def executar_teste(context, chave, chat_id):
                    "Use os botões abaixo (ou responda a foto com \"em andamento\" ou \"resolvido\").")
         await enviar(bot, sc, txt, message_thread_id=st or None, reply_markup=botao_oc("12"))
     elif chave == "oc_lista":
-        texto, teclado = oc_texto_lista()
-        extra = {"reply_markup": teclado} if teclado else {}
         sc, st = oc_saida()
-        await enviar(bot, sc, texto, message_thread_id=st or None, **extra)
+        await oc_enviar_lista(bot, sc, st or None)
     elif chave == "relogio":
         texto = rel_cfg().get("texto") or TEXTO_RELOGIO
         await enviar(bot, CFG.get("fech_grupo_chat_id"), texto.replace("{ano}", str(hoje().year)))
@@ -3215,6 +3264,9 @@ def montar_app(token: str) -> Application:
     app = (Application.builder().token(token)
            .request(conexao()).get_updates_request(conexao(40)).build())
     app.add_error_handler(erro_geral)
+    import sys as _sys
+    BAR.setup(_sys.modules[__name__])
+    BAR.registrar_handlers(app)
     from telegram.ext import TypeHandler
     app.add_handler(TypeHandler(Update, guardar_pessoa), group=-1)  # guarda nome/@ de quem fala com o robô
     app.add_handler(CommandHandler("start", cmd_start))

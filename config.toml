@@ -263,3 +263,229 @@ foto_conta = true              # foto postada no tópico durante a cobrança val
 conferir_apos_min = 60         # começa a conferir no Leankeep depois de 1h
 avisar_gestor_apos_min = 240   # se depois de 4h ainda estiver pendente, avisa você no privado
 
+# ------------------------------------------------------------
+# BAR – grupo "CB Jundiaí - Bar" (Guide de Procedimentos Bar V7)
+#   Configure cada tópico mandando, DENTRO dele: /topico_bar CHAVE  (chaves abaixo, em nomes_topicos)
+#   A evidência é a postagem no tópico (foto, arquivo ou texto com 40+ letras).
+#   Em tópico com mais de uma rotina, o robô pergunta com botões o que foi postado.
+#   /bar no privado = situação de tudo; /farol = publica o farol no General.
+# ------------------------------------------------------------
+[bar]
+ativo = true
+marcar = ["@juliaRafaela", "@luizFelipe"]
+silencio = ["01:30", "09:00"]      # nada é enviado nesse intervalo; o que cair nele sai às 09:00
+resumo_noite = "01:20"             # resumo das rotinas diárias no seu privado
+min_caracteres_texto = 40          # texto (sem foto) com menos que isso não conta como entrega
+
+[bar.farol]
+ativo = true
+dias = ["seg"]                     # toda segunda
+horario = "10:00"
+reforco_a_partir_do_dia = 25
+dias_reforco = ["qui"]             # e também às quintas, a partir do dia 25
+horario_fechamento = "20:00"       # no último dia do mês
+
+[bar.nomes_topicos]
+general = "General"
+relatorios = "Relatórios"
+desperdicio = "Desperdício do bar"
+producao = "Itens produção"
+treinamentos = "Treinamentos e provas"
+porcionamento = "Auditoria de porcionamentos"
+checklists = "Checklists"
+contagens = "Contagens"
+reunioes = "Reuniões e atas"
+limpeza = "Limpeza e controles"
+
+# ---- diárias (prazo de madrugada conta para o dia anterior) ----
+[[bar.rotinas]]
+id = "relatorio"
+nome = "Relatório diário do chefe/subchefe (4.4)"
+nome_curto = "Relatório diário"
+tipo = "diaria"
+topico = "relatorios"
+prazo = "01:00"
+
+[[bar.rotinas]]
+id = "desperdicio"
+nome = "Desperdício do bar pesado e registrado (9.1–9.3)"
+nome_curto = "Desperdício"
+tipo = "diaria"
+topico = "desperdicio"
+prazo = "01:00"
+palavra_obrigatoria = "chopp"
+
+[[bar.rotinas]]
+id = "producao"
+nome = "Itens de produção do dia"
+nome_curto = "Itens produção"
+tipo = "diaria"
+topico = "producao"
+prazo = "23:30"
+
+[[bar.rotinas]]
+id = "checklist_abertura"
+nome = "Checklist de abertura assinado (6.1)"
+nome_curto = "Checklist abertura"
+tipo = "diaria"
+topico = "checklists"
+botao = "Checklist de abertura"
+prazo = "11:00"
+
+[[bar.rotinas]]
+id = "checklist_fechamento"
+nome = "Checklist de fechamento assinado (6.1)"
+nome_curto = "Checklist fechamento"
+tipo = "diaria"
+topico = "checklists"
+botao = "Checklist de fechamento"
+prazo = "01:00"
+
+[[bar.rotinas]]
+id = "unitarios"
+nome = "Contagem de unitários antes da abertura (18.1)"
+nome_curto = "Contagem de unitários"
+tipo = "diaria"
+topico = "contagens"
+botao = "Unitários"
+prazo = "11:00"
+
+[[bar.rotinas]]
+id = "porcionamento_dia"
+nome = "Auditoria de porcionamento do dia (11.1)"
+nome_curto = "Porcionamento do dia"
+tipo = "diaria"
+topico = "porcionamento"
+botao = "Porcionamento do dia"
+prazo = "18:00"
+
+[[bar.rotinas]]
+id = "flv"
+nome = "Planilha de higienização de hortifruti (11.3)"
+nome_curto = "Higienização FLV"
+tipo = "diaria"
+topico = "limpeza"
+botao = "Higienização FLV"
+prazo = "14:00"
+
+# ---- semanais (dia = dia do prazo) ----
+[[bar.rotinas]]
+id = "reuniao_semanal"
+nome = "Reunião semanal com a equipe do bar (2.2)"
+nome_curto = "Reunião semanal"
+tipo = "semanal"
+topico = "reunioes"
+botao = "Reunião semanal"
+dia = "sab"
+prazo = "23:59"
+
+[[bar.rotinas]]
+id = "porcionamento_semana"
+nome = "Consolidação semanal do porcionamento em Excel (11.1)"
+nome_curto = "Consolidação do porcionamento"
+tipo = "semanal"
+topico = "porcionamento"
+botao = "Consolidação semanal"
+dia = "seg"
+prazo = "18:00"
+
+[[bar.rotinas]]
+id = "destilados"
+nome = "Contagem semanal de destilados (18.1)"
+nome_curto = "Contagem de destilados"
+tipo = "semanal"
+topico = "contagens"
+botao = "Destilados"
+dia = "seg"
+prazo = "16:00"
+
+[[bar.rotinas]]
+id = "limpeza"
+nome = "Cronograma de limpeza semanal com fotos (16.7)"
+nome_curto = "Cronograma de limpeza"
+tipo = "semanal"
+topico = "limpeza"
+botao = "Limpeza"
+dia = "qua"
+prazo = "16:00"
+
+# ---- mensais (meta = quantas entregas no mês) ----
+[[bar.rotinas]]
+id = "treinamento"
+nome = "Treinamento com 60% da equipe (2.1)"
+nome_curto = "Treinamentos (60% da equipe)"
+tipo = "mensal"
+topico = "treinamentos"
+botao = "Treinamento"
+meta = 2
+
+[[bar.rotinas]]
+id = "prova"
+nome = "Prova após os treinamentos (3.3)"
+nome_curto = "Provas dos treinamentos"
+tipo = "mensal"
+topico = "treinamentos"
+botao = "Prova"
+meta = 2
+
+[[bar.rotinas]]
+id = "boas_praticas"
+nome = "Treinamento de boas práticas com a Nutrição (2.4)"
+nome_curto = "Treinamento de boas práticas"
+tipo = "mensal"
+topico = "treinamentos"
+botao = "Boas práticas"
+meta = 1
+
+[[bar.rotinas]]
+id = "reuniao_nutricao"
+nome = "Reunião com a Nutrição, com o diretor (2.5)"
+nome_curto = "Reunião com a Nutrição"
+tipo = "mensal"
+topico = "reunioes"
+botao = "Reunião com a Nutrição"
+meta = 1
+
+[[bar.rotinas]]
+id = "reuniao_mensal"
+nome = "Reunião mensal diretor e gerente de bar (2.3)"
+nome_curto = "Reunião mensal com o gerente"
+tipo = "mensal"
+topico = "reunioes"
+botao = "Reunião mensal"
+meta = 1
+
+# ---- quinzenal ----
+[[bar.rotinas]]
+id = "pvps"
+nome = "Controle de PVPS (10.5)"
+nome_curto = "PVPS"
+tipo = "quinzenal"
+topico = "limpeza"
+botao = "PVPS"
+
+# ---- só do diretor (lembrete no seu privado, botão Feito) ----
+[[bar.rotinas]]
+id = "feedback_equipe"
+nome = "Feedback individual do chefe para a equipe (3.1)"
+nome_curto = "Feedback da equipe"
+tipo = "diretor"
+topico = "privado"
+frequencia = "mensal"
+
+[[bar.rotinas]]
+id = "revisao_docs"
+nome = "Revisão dos documentos da auditoria (1.1)"
+nome_curto = "Revisão de documentos"
+tipo = "diretor"
+topico = "privado"
+frequencia = "quinzenal"
+
+[[bar.rotinas]]
+id = "feedback_gerente"
+nome = "Feedback do gerente para a chefia (3.2)"
+nome_curto = "Feedback da chefia"
+tipo = "diretor"
+topico = "privado"
+frequencia = "semestral"
+
