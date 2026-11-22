@@ -14,6 +14,7 @@ import html
 import json
 import logging
 import os
+import re
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -818,6 +819,34 @@ def oc_link(o: dict) -> str:
     return link
 
 
+# Raízes das palavras: "quebr" pega quebra, quebrou, quebrado… (maiúsculas e acentos não importam)
+PALAVRAS_ABREM_PADRAO = ["ocorrencia", "manutencao", "danific", "quebr", "vaza", "queim", "estrag", "defeit",
+                         "entup", "consert", "concert", "pifou", "pifad", "nao funciona", "nao esta funcionando",
+                         "sem funcionar"]
+PALAVRAS_PERGUNTAM_PADRAO = ["verific", "avali", "revis", "troca", "solt", "parou", "parad"]
+
+
+def _tem_raiz(texto: str, raizes: list[str]) -> bool:
+    t = " " + " ".join(re.sub(r"[^A-Z0-9 ]", " ", normalizar(texto)).split())
+    for r in raizes:
+        r = " ".join(re.sub(r"[^A-Z0-9 ]", " ", normalizar(r)).split())
+        if r and f" {r}" in t:  # começo de palavra: "parou" não pega "separou"
+            return True
+    return False
+
+
+def oc_nivel(texto: str) -> str | None:
+    """'abre' = vira ocorrência; 'pergunta' = robô pergunta com botão; None = só conversa."""
+    if not oc_cfg().get("exigir_palavra_chave", True):
+        return "abre"
+    cfg = oc_cfg()
+    if _tem_raiz(texto, cfg.get("palavras_abrem", cfg.get("palavras_chave", PALAVRAS_ABREM_PADRAO))):
+        return "abre"
+    if _tem_raiz(texto, cfg.get("palavras_perguntam", PALAVRAS_PERGUNTAM_PADRAO)):
+        return "pergunta"
+    return None
+
+
 def eh_resolvido(texto: str) -> bool:
     t = normalizar(texto)
     palavras = oc_cfg().get("palavras_resolvido",
@@ -1072,43 +1101,130 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         break  # só junta com a ocorrência mais recente dessa pessoa
 
-    if not tem_midia and len(texto) < int(oc_cfg().get("min_caracteres_texto", 15)):
-        return  # "bom dia", "ok"… não viram ocorrência
     if eh_resolvido(texto) and not tem_midia:
         return
 
-    dados["seq"] += 1
-    num = str(dados["seq"])
-    dados["itens"][num] = {
-        "num": int(num), "chat_id": msg.chat.id,
-        "topico": msg.message_thread_id if msg.is_topic_message else 0,
-        "msg_ids": [msg.message_id], "album": msg.media_group_id,
-        "autor": quem, "autor_id": uid, "texto": texto, "foto": bool(msg.photo),
-        "criada": enviada.isoformat(timespec="minutes"),
-        "ultima_msg": enviada.isoformat(timespec="seconds"), "resolvida": None,
-    }
-    gravar(ARQ_OCORR, dados)
-    if oc_cfg().get("confirmar_registro", True):
-        if saida_separada():
-            o = dados["itens"][num]
-            resumo = esc(texto[:120] + ("…" if len(texto) > 120 else "")) if texto else "(só foto)"
-            link = f"<a href=\"{oc_link(o)}\">{'📷 ver foto' if o.get('foto') else '↗ ver mensagem'}</a>"
-            c, t = oc_saida()
-            r = await enviar(context.bot, c,
-                             f"📌 <b>Ocorrência #{num} registrada</b> – 🔴 Pendente\n\n"
-                             f"{resumo}\n"
-                             f"<i>{esc(quem)} · {enviada.strftime('%d/%m %H:%M')}</i> · {link}\n\n"
-                             f"Use os botões abaixo para atualizar.",
-                             message_thread_id=t or None, reply_markup=botao_oc(num))
+    # 4) palavra-chave. Palavra "forte" (quebrou, vazando…) abre direto; palavra "fraca"
+    #    (verificar, avaliar…) faz o robô perguntar com botão; sem palavra, não vira ocorrência.
+    #    A foto mandada pouco antes pela mesma pessoa fica guardada para entrar junto.
+    cands = {k: c for k, c in dados.get("candidatas", {}).items()
+             if abs((enviada - datetime.fromisoformat(c["ultima_msg"])).total_seconds()) <= janela}
+    chave_c = f"{msg.chat.id}:{uid}"
+    cand = cands.get(chave_c)
+    nivel = oc_nivel(texto)
+    if not nivel:
+        if cand:
+            cand["msg_ids"].append(msg.message_id)
+            cand["texto"] = (cand["texto"] + " " + texto).strip() if texto else cand["texto"]
+            cand["foto"] = cand["foto"] or bool(msg.photo)
+            cand["album"] = cand.get("album") or msg.media_group_id
+            cand["ultima_msg"] = enviada.isoformat(timespec="seconds")
         else:
-            r = await msg.reply_text(
-                f"📌 Ocorrência #{num} registrada – 🔴 Pendente\n\n"
-                f"Use os botões abaixo (ou responda a foto com \"em andamento\" ou \"resolvido\").",
-                reply_markup=botao_oc(num))
+            cands[chave_c] = {"msg_ids": [msg.message_id], "texto": texto, "foto": bool(msg.photo),
+                              "album": msg.media_group_id,
+                              "criada": enviada.isoformat(timespec="minutes"),
+                              "ultima_msg": enviada.isoformat(timespec="seconds")}
+        dados["candidatas"] = cands
+        gravar(ARQ_OCORR, dados)
+        return
+    if nivel == "abre" and not oc_cfg().get("exigir_palavra_chave", True) and not tem_midia \
+            and len(texto) < int(oc_cfg().get("min_caracteres_texto", 15)):
+        return  # "bom dia", "ok"… não viram ocorrência
+
+    ids, foto, criada, album = [msg.message_id], bool(msg.photo), enviada.isoformat(timespec="minutes"), msg.media_group_id
+    if cand:  # junta a foto (ou texto) mandada pouco antes, sem palavra-chave
+        cands.pop(chave_c)
+        ids = cand["msg_ids"] + ids
+        texto = (cand["texto"] + " " + texto).strip() if cand["texto"] else texto
+        criada, album = cand["criada"], cand.get("album") or album
+        if cand["foto"]:
+            foto = True
+        elif msg.photo:
+            ids.remove(msg.message_id)
+            ids.insert(0, msg.message_id)
+    dados["candidatas"] = cands
+    item = {"chat_id": msg.chat.id, "topico": msg.message_thread_id if msg.is_topic_message else 0,
+            "msg_ids": ids, "album": album, "autor": quem, "autor_id": uid, "texto": texto,
+            "foto": foto, "criada": criada, "ultima_msg": enviada.isoformat(timespec="seconds"),
+            "resolvida": None}
+
+    if nivel == "pergunta":
+        chave_p = f"{msg.chat.id}:{msg.message_id}"
+        dados.setdefault("perguntas", {})[chave_p] = item
+        gravar(ARQ_OCORR, dados)
+        r = await enviar(context.bot, msg.chat.id,
+                         f"🤔 {esc(quem.split()[0])}, isso é uma ocorrência de manutenção?",
+                         message_thread_id=item["topico"] or None, reply_to_message_id=msg.message_id,
+                         reply_markup=InlineKeyboardMarkup([[
+                             InlineKeyboardButton("📌 Sim, abrir ocorrência", callback_data=f"ocq|s|{chave_p}"),
+                             InlineKeyboardButton("Não", callback_data=f"ocq|n|{chave_p}")]]))
         if r is not None:
             dados = oc_dados()
-            dados["itens"][num]["msg_robo"] = r.message_id
-            gravar(ARQ_OCORR, dados)
+            if chave_p in dados.get("perguntas", {}):
+                dados["perguntas"][chave_p]["msg_pergunta"] = r.message_id
+                gravar(ARQ_OCORR, dados)
+        return
+
+    await oc_registrar(context.bot, dados, item)
+
+
+async def oc_registrar(bot, dados: dict, item: dict) -> str:
+    """Dá número à ocorrência, grava e confirma (no Keepbot ou respondendo a própria foto)."""
+    dados["seq"] += 1
+    num = str(dados["seq"])
+    item["num"] = int(num)
+    dados["itens"][num] = item
+    gravar(ARQ_OCORR, dados)
+    if not oc_cfg().get("confirmar_registro", True):
+        return num
+    quem, texto = item["autor"], item["texto"]
+    if saida_separada():
+        resumo = esc(texto[:120] + ("…" if len(texto) > 120 else "")) if texto else "(só foto)"
+        link = f"<a href=\"{oc_link(item)}\">{'📷 ver foto' if item.get('foto') else '↗ ver mensagem'}</a>"
+        c, t = oc_saida()
+        r = await enviar(bot, c,
+                         f"📌 <b>Ocorrência #{num} registrada</b> – 🔴 Pendente\n\n"
+                         f"{resumo}\n"
+                         f"<i>{esc(quem)} · {datetime.fromisoformat(item['criada']):%d/%m %H:%M}</i> · {link}\n\n"
+                         f"Use os botões abaixo para atualizar.",
+                         message_thread_id=t or None, reply_markup=botao_oc(num))
+    else:
+        r = await enviar(bot, item["chat_id"],
+                         f"📌 Ocorrência #{num} registrada – 🔴 Pendente\n\n"
+                         f"Use os botões abaixo (ou responda a foto com \"em andamento\" ou \"resolvido\").",
+                         message_thread_id=item["topico"] or None, reply_to_message_id=item["msg_ids"][0],
+                         reply_markup=botao_oc(num))
+    if r is not None:
+        dados = oc_dados()
+        dados["itens"][num]["msg_robo"] = r.message_id
+        gravar(ARQ_OCORR, dados)
+    return num
+
+
+async def oc_botao_pergunta(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Resposta ao "isso é uma ocorrência?" (palavras como verificar, avaliar, revisar)."""
+    q = update.callback_query
+    _, resp, chave_p = q.data.split("|", 2)
+    dados = oc_dados()
+    item = dados.get("perguntas", {}).pop(chave_p, None)
+    if not item:
+        await q.answer("Essa pergunta já foi respondida.")
+        try:
+            await q.message.delete()
+        except Exception:
+            pass
+        return
+    item.pop("msg_pergunta", None)
+    gravar(ARQ_OCORR, dados)
+    try:
+        await q.message.delete()  # tira a pergunta do grupo para não poluir
+    except Exception:
+        pass
+    if resp == "s":
+        num = await oc_registrar(context.bot, dados, item)
+        await q.answer(f"Ocorrência #{num} aberta")
+    else:
+        await q.answer("Ok, não virou ocorrência.")
 
 
 async def oc_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3294,6 +3410,7 @@ def montar_app(token: str) -> Application:
     app.add_handler(CommandHandler("configurar_fechamento", cmd_configurar_fechamento))
     app.add_handler(CommandHandler("testar_lembrete", cmd_testar_lembrete))
     app.add_handler(CallbackQueryHandler(oc_botao, pattern=r"^oca?\|"))
+    app.add_handler(CallbackQueryHandler(oc_botao_pergunta, pattern=r"^ocq\|"))
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & ~filters.COMMAND, mensagem_grupo))
     app.add_handler(CommandHandler("alerta", cmd_alerta))
     app.add_handler(CommandHandler("conferir", cmd_conferir))

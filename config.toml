@@ -108,6 +108,16 @@ juntar_segundos = 120            # foto + texto da mesma pessoa em até 2 min = 
 palavras_resolvido = ["resolvido", "resolvida", "concluído", "concluída", "finalizado"]
 palavras_andamento = ["em andamento", "andamento", "verificando", "vou verificar", "estou vendo"]
 avisar_baixa_privado = true      # cada baixa chega no privado do gestor (foto, quem baixou, data) com botão Reativar
+# Palavras-chave (vale a raiz: "quebr" pega quebra, quebrou, quebrado; maiúsculas e acentos não importam)
+#   palavras_abrem     → a mensagem/foto vira ocorrência na hora
+#   palavras_perguntam → o robô pergunta "isso é uma ocorrência?" com botão Sim / Não
+#   sem nenhuma delas  → é só conversa, não vira ocorrência
+# Foto mandada sem texto + texto com a palavra em até 2 min (mesma pessoa) = uma ocorrência com foto.
+exigir_palavra_chave = true
+palavras_abrem = ["ocorrência", "manutenção", "danific", "quebr", "vaza", "queim", "estrag", "defeit",
+                  "entup", "consert", "concert", "pifou", "pifad",
+                  "não funciona", "não está funcionando", "sem funcionar"]
+palavras_perguntam = ["verific", "avali", "revis", "troca", "solt", "parou", "parad"]
 
 # ------------------------------------------------------------
 # RESUMO SEMANAL (privado do gestor) — baixas no prazo x em atraso
@@ -276,6 +286,8 @@ marcar = ["@juliaRafaela", "@luizFelipe"]
 silencio = ["01:30", "09:00"]      # nada é enviado nesse intervalo; o que cair nele sai às 09:00
 resumo_noite = "01:20"             # resumo das rotinas diárias no seu privado
 min_caracteres_texto = 40          # texto (sem foto) com menos que isso não conta como entrega
+cobrar_grupo_uma_vez = true        # cobra 1 vez no grupo; as cobranças seguintes vão só para o seu privado
+lembrete_no_grupo = true           # lembrete antes do prazo (⏰, sem marcar ninguém) também sai no grupo
 
 [bar.farol]
 ativo = true

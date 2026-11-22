@@ -50,6 +50,7 @@ def dados() -> dict:
     d.setdefault("evid", [])
     d.setdefault("enviados", {})
     d.setdefault("classificar", {})
+    d.setdefault("cobrado_grupo", {})  # rotina|período → {em, link}: já foi cobrado 1 vez no grupo
     return d
 
 
@@ -59,6 +60,7 @@ def gravar(d: dict):
     lim_m = (B.hoje() - timedelta(days=70)).isoformat()
     d["evid"] = [e for e in d["evid"] if e.get("em", "") >= lim_e]
     d["enviados"] = {k: v for k, v in d["enviados"].items() if v >= lim_m}
+    d["cobrado_grupo"] = {k: v for k, v in d.get("cobrado_grupo", {}).items() if v.get("em", "") >= lim_m}
     B.gravar(arq(), d)
 
 
@@ -301,6 +303,7 @@ async def tick(context):
     desde = max(desde, agora - timedelta(hours=6))  # rodada muito atrasada não despeja tudo
     g = B.CFG.get("gestor_chat_id")
     fila = {}
+    privado = []
     inicio = datetime.fromisoformat(d.setdefault("inicio", agora.isoformat(timespec="seconds")))
 
     for r in rotinas():
@@ -325,26 +328,51 @@ async def tick(context):
                 continue
             if r["topico"] not in topicos() and "general" not in topicos():
                 continue  # tópico ainda não configurado
-            fila.setdefault(r["topico"], []).append((r, nivel, rotulo, fim, feitos, pchave))
+            item = (r, nivel, rotulo, fim, feitos, pchave)
+            chave_cg = f"{r['id']}|{pchave}"
+            if nivel == "lembrete":
+                if cfg().get("lembrete_no_grupo", True) and chave_cg not in d["cobrado_grupo"]:
+                    fila.setdefault(r["topico"], []).append(item)
+            elif chave_cg in d["cobrado_grupo"] and cfg().get("cobrar_grupo_uma_vez", True):
+                privado.append(item)  # já cobrado no grupo: as próximas cobranças vão só para o gestor
+            else:
+                fila.setdefault(r["topico"], []).append(item)
 
     # uma mensagem por tópico (várias pendências do mesmo tópico saem juntas)
-    alertas_privado = []
     for topico, itens in fila.items():
         chat, top = destino(topico)
         if len(itens) == 1:
             r, nivel, rotulo, fim, feitos, pchave = itens[0]
             kb = botao_feito(r, pchave) if nivel != "lembrete" else None
-            await B.enviar(bot, chat, texto_cobranca(r, nivel, rotulo, fim, feitos), message_thread_id=top,
-                           **({"reply_markup": kb} if kb else {}))
+            m = await B.enviar(bot, chat, texto_cobranca(r, nivel, rotulo, fim, feitos), message_thread_id=top,
+                               **({"reply_markup": kb} if kb else {}))
         else:
             texto, kb = texto_agrupado(topico, itens)
-            await B.enviar(bot, chat, texto, message_thread_id=top, **({"reply_markup": kb} if kb else {}))
-        alertas_privado += [(r, rotulo, feitos) for r, nivel, rotulo, fim, feitos, _ in itens if nivel == "alerta"]
-    if alertas_privado and g:
-        L = ["🚨 <b>Bar – continua pendente</b>", ""]
-        L += [f"• {B.esc(r.get('nome_curto', r['nome']))} ({B.esc(rotulo)}): {situacao(r, f)}"
-              for r, rotulo, f in alertas_privado]
-        await B.enviar(bot, g, "\n".join(L))
+            m = await B.enviar(bot, chat, texto, message_thread_id=top, **({"reply_markup": kb} if kb else {}))
+        try:
+            link = link_msg(m) if m is not None else ""
+        except Exception:
+            link = ""
+        for r, nivel, _, _, _, pchave in itens:
+            if nivel != "lembrete":
+                d["cobrado_grupo"][f"{r['id']}|{pchave}"] = {"em": agora.date().isoformat(), "link": link}
+
+    # cobranças seguintes: só no privado do gestor, numa mensagem só, com o botão Feito de cada uma
+    if privado and g:
+        L = ["🚨🚨 <b>BAR – CONTINUA PENDENTE</b> 🚨🚨", "",
+             "<i>Já cobrado 1 vez no grupo. As próximas cobranças vêm só para você.</i>", ""]
+        for r, nivel, rotulo, fim, feitos, pchave in privado:
+            prazo = f"venceu {fim:%d/%m}" if fim.time() == time(23, 59) else f"venceu {fim:%d/%m %H:%M}"
+            if fim > agora:
+                prazo = f"até {fim:%d/%m}" if fim.time() == time(23, 59) else f"prazo {fim:%d/%m %H:%M}"
+            link = d["cobrado_grupo"].get(f"{r['id']}|{pchave}", {}).get("link")
+            ver = f" · <a href=\"{link}\">ver cobrança</a>" if link else ""
+            L.append(f"• <b>{B.esc(r.get('nome_curto', r['nome']))}</b> ({B.esc(rotulo)}): "
+                     f"{situacao(r, feitos)} · {prazo} · {B.esc(nome_topico(r['topico']))}{ver}")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ Feito: {r.get('nome_curto', r['nome'])[:28]}",
+                                                         callback_data=f"bf|{r['id']}|{pchave}")]
+                                   for r, _, _, _, _, pchave in privado])
+        await B.enviar(bot, g, "\n".join(L), reply_markup=kb)
 
     await lembrar_classificacao(bot, d, agora)
     await farol_programado(bot, d, agora, desde)
