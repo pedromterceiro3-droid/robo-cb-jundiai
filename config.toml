@@ -47,8 +47,8 @@ maximo = 2
 nome = "Leitura de água, energia e gás"
 aviso = "09:00"
 prazo = "10:00"
-palavras = ["LEITURA"]
-excluir = ["QGBT"]
+palavras = ["LEITURA"]                # inclui a leitura da pressão de gás da loja (seg e qui)
+excluir = ["QGBT", "CHECKLIST: BAR", "CHECKLIST: COZINHA"]
 dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
 privado = true
 responsaveis = []
@@ -57,8 +57,8 @@ responsaveis = []
 nome = "Checklist de banheiros, brinquedoteca e salões"
 aviso = "10:00"
 prazo = "11:00"
-palavras = ["BANHEIRO", "BRINQUEDOTECA", "SALAO", "SALOES"]
-excluir = []
+palavras = ["BANHEIRO", "BRINQUEDOTECA", "SALAO", "SALOES"]   # inclui o salão de eventos (seg e qui)
+excluir = ["CHECKLIST: BAR", "CHECKLIST: COZINHA"]
 dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
 privado = true
 responsaveis = []
@@ -68,10 +68,34 @@ nome = "Checklists da manutenção"
 aviso = "16:00"
 prazo = "18:00"
 palavras = ["CHECKLIST: MANUTENCAO"]
-excluir = ["BANHEIRO", "BRINQUEDOTECA", "SALAO", "SALOES", "LEITURA", "QGBT", "EXAUST", "INSUFLA", "FECHAMENTO", "DESLIGAMENTO", "BALCOES REFRIGERADOS"]
+excluir = ["BANHEIRO", "BRINQUEDOTECA", "SALAO", "SALOES", "LEITURA", "QGBT", "EXAUST", "INSUFLA", "FECHAMENTO", "DESLIGAMENTO", "BALCOES REFRIGERADOS", "CHECKLIST: BAR", "CHECKLIST: COZINHA"]
 dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
 privado = true
 responsaveis = []
+
+[[cobrancas]]
+nome = "Checklists do bar e da cozinha (seg e qui)"
+aviso = "10:00"
+prazo = "11:00"
+palavras = ["CHECKLIST: BAR", "CHECKLIST: COZINHA"]
+excluir = []
+dias = ["seg", "qui"]
+privado = true
+responsaveis = []
+
+[[cobrancas]]
+nome = "Conferência da diretoria"
+aviso = "18:30"            # uma mensagem só, às 18:30, no SEU privado (não vai para o grupo)
+prazo = "23:59"
+palavras = ["CONFERENCIA DA DIRETORIA"]
+excluir = []
+dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
+so_gestor = true
+privado = false
+responsaveis = []
+reforco_maximo = 0
+aviso_antes_prazo_min = 0
+avisar_baixa_atrasada = false
 
 [[cobrancas]]
 nome = "Leitura do QGBT (domingo)"
@@ -213,6 +237,15 @@ onde = "leankeep"
 ativo = true
 
 [[lembretes]]
+texto = "FAZER CHECKLIST DO BAR E DA COZINHA ATÉ AS 11h"
+horario = "10:30"
+dias = ["seg", "qui"]
+conferir = "Checklists do bar e da cozinha (seg e qui)"
+marcar = ["@Carlosh0512", "Gabrielle", "@WilmenOsorio", "@Rhayrodriguez", "@Glaubergois", "@Rinaldo_santana"]
+onde = "leankeep"
+ativo = true
+
+[[lembretes]]
 texto = "FAZER LEITURA DO QGBT ATÉ AS 14h"
 horario = "13:00"
 dias = ["dom"]
@@ -292,6 +325,8 @@ resumo_noite = "01:20"             # resumo das rotinas diárias no seu privado
 min_caracteres_texto = 40          # texto (sem foto) com menos que isso não conta como entrega
 cobrar_grupo_uma_vez = true        # cobra 1 vez no grupo; as cobranças seguintes vão só para o seu privado
 lembrete_no_grupo = true           # lembrete antes do prazo (⏰, sem marcar ninguém) também sai no grupo
+agradecer = true                   # a cada entrega: reação na foto + mensagem de agradecimento respondendo a ela
+reacao = "🙏"                      # reação usada (vale: 👍 ❤ 🔥 🎉 🙏 👏 🏆 💯 …)
 
 [bar.farol]
 ativo = true
@@ -341,21 +376,21 @@ prazo = "23:30"
 
 [[bar.rotinas]]
 id = "checklist_abertura"
-nome = "Checklist de abertura assinado (6.1)"
+nome = "Checklist de abertura (feito no app) postado no grupo (6.1)"
 nome_curto = "Checklist abertura"
 tipo = "diaria"
 topico = "checklists"
 botao = "Checklist de abertura"
-prazo = "11:00"
+prazo = "23:00"            # lembrete às 22:30 e cobrança às 23:00 (depois, só no seu privado)
 
 [[bar.rotinas]]
 id = "checklist_fechamento"
-nome = "Checklist de fechamento assinado (6.1)"
+nome = "Checklist de fechamento (feito no app) postado no grupo (6.1)"
 nome_curto = "Checklist fechamento"
 tipo = "diaria"
 topico = "checklists"
 botao = "Checklist de fechamento"
-prazo = "01:00"
+prazo = "23:00"            # lembrete às 22:30 e cobrança às 23:00 (depois, só no seu privado)
 
 [[bar.rotinas]]
 id = "unitarios"
@@ -368,6 +403,7 @@ prazo = "11:00"
 
 [[bar.rotinas]]
 id = "porcionamento_dia"
+ativo = false              # desligada: a auditoria de porções passou a ser cobrada 1x por semana (consolidada)
 nome = "Auditoria de porcionamento do dia (11.1)"
 nome_curto = "Porcionamento do dia"
 tipo = "diaria"
@@ -397,12 +433,13 @@ prazo = "23:59"
 
 [[bar.rotinas]]
 id = "porcionamento_semana"
-nome = "Consolidação semanal do porcionamento em Excel (11.1)"
-nome_curto = "Consolidação do porcionamento"
+nome = "Auditoria de porcionamentos (11.1)"
+nome_curto = "Auditoria de porções"
+marcar = ["@AnaCarolinaMtz"]   # feita pela nutrição: a cobrança marca a nutricionista (no lugar dos gerentes do bar)
 tipo = "semanal"
 topico = "porcionamento"
-botao = "Consolidação semanal"
-dia = "seg"
+botao = "Auditoria de porções"
+dias = ["seg", "qua", "sex"]   # combinado com a nutrição: cobrada segunda, quarta e sexta
 prazo = "18:00"
 
 [[bar.rotinas]]

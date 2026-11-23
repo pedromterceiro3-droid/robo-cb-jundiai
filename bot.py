@@ -440,6 +440,10 @@ async def cobrar(context: ContextTypes.DEFAULT_TYPE):
 
 async def cobrar_leankeep(context, cob, rodada):
     bot = context.bot
+    if cob.get("so_gestor"):
+        if rodada == 0:  # só uma mensagem, no horário do aviso, no privado do gestor
+            await cobrar_so_gestor(bot, cob)
+        return
     if declarada(cob) and not TESTE.get():
         log.info("Cobrança de %s não enviada: baixa declarada por %s", cob["nome"], declarada(cob)["quem"])
         return
@@ -494,6 +498,25 @@ async def cobrar_leankeep(context, cob, rodada):
                    f"para baixar no Leankeep até {esc(txt_prazo(cob))}:"]
             txt += [f"   ▫️ {esc(legivel(a.descricao))}" for a in minhas[:30]]
             await enviar(bot, int(tid), "\n".join(txt))
+
+
+async def cobrar_so_gestor(bot, cob):
+    """Cobrança que vai SÓ para o privado do gestor (ex.: Conferência da diretoria)."""
+    g = CFG.get("gestor_chat_id")
+    if not g:
+        return
+    try:
+        ativs = sem_duplicadas(await buscar_pendentes(cob.get("palavras"), data_ref(cob), cob.get("excluir")))
+    except Exception as e:
+        await enviar(bot, g, f"⚠️ Não consegui consultar o Leankeep para <b>{esc(cob['nome'])}</b>: {esc(e)}")
+        return
+    if not ativs:
+        await enviar(bot, g, f"✅ <b>{esc(cob['nome'])}</b>: tudo baixado no Leankeep.")
+        return
+    linhas = [f"🚨🚨 <b>{esc(cob['nome'].upper())}</b> 🚨🚨", "",
+              f"🔴 {len(ativs)} atividade(s) ainda sem baixa no Leankeep · prazo {esc(txt_prazo(cob))}"]
+    linhas += bloco_atividades(ativs, cadastros(), limite=30)
+    await enviar(bot, g, "\n".join(linhas))
 
 
 async def cobrar_manual(context, cob, rodada):
@@ -1760,6 +1783,8 @@ def cobrancas_em_andamento():
     agora = datetime.now(FUSO)
     saida = []
     for cob in CFG.get("cobrancas", []):
+        if cob.get("so_gestor"):
+            continue  # cobrança só do privado: não entra nas conferências do grupo
         dia = data_ref(cob)
         if not roda_hoje(cob, dia):
             continue
@@ -1807,6 +1832,8 @@ def cobranca_da_foto():
     ref = CFG.get("reforco", {})
     ativas = []
     for i, cob in enumerate(CFG.get("cobrancas", [])):
+        if cob.get("so_gestor"):
+            continue
         dia = data_ref(cob)
         if not roda_hoje(cob, dia):
             continue
@@ -3024,6 +3051,52 @@ def _reenvios():
     return r
 
 
+async def cmd_apagar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Responda (marque) uma mensagem com /apagar.
+    • Mensagem do robô: é apagada do grupo.
+    • Agradecimento do bar ou a própria postagem: a entrega registrada é desfeita (o robô volta a cobrar)."""
+    msg = update.effective_message
+    if not _eh_gestor(update):
+        await msg.reply_text("Só o gestor pode usar /apagar.")
+        return
+    alvo = msg.reply_to_message
+    if not alvo or (msg.is_topic_message and alvo.message_id == msg.message_thread_id):
+        await msg.reply_text("Responda (marque) a mensagem que quer apagar e escreva /apagar.")
+        return
+    chat = msg.chat.id
+    desfeitas = BAR.desfazer(chat, alvo.message_id)
+    apagou, erro = False, ""
+    do_robo = bool(alvo.from_user and alvo.from_user.id == context.bot.id)
+    if do_robo:
+        try:
+            await context.bot.delete_message(chat, alvo.message_id)
+            apagou = True
+        except Exception as e:
+            erro = str(e)
+    if desfeitas:  # não apaga a foto de quem postou: só tira a reação do robô e a entrega
+        post = BAR.msg_da_postagem(BAR.ULTIMO_LINK_DESFEITO[0]) if BAR.ULTIMO_LINK_DESFEITO else None
+        try:
+            await context.bot.set_message_reaction(chat, post or alvo.message_id, None)
+        except Exception:
+            pass
+    try:
+        await msg.delete()  # tira o próprio /apagar do grupo
+    except Exception:
+        pass
+    L = []
+    if do_robo:
+        L.append("🗑️ Mensagem do robô apagada." if apagou else
+                 f"⚠️ Não consegui apagar a mensagem ({esc(erro[:120])}). O robô precisa ser administrador "
+                 f"com permissão de apagar mensagens.")
+    if desfeitas:
+        L.append("↩️ Entrega desfeita – o robô volta a cobrar se ainda estiver pendente:")
+        L += [f"• {esc(x)}" for x in desfeitas]
+    if not L:
+        L.append("Essa mensagem não é do robô nem uma entrega registrada; não apaguei nada.")
+    destino = CFG.get("gestor_chat_id") or chat
+    await enviar(context.bot, destino, "\n".join(L))
+
+
 def _eh_gestor(update) -> bool:
     g = CFG.get("gestor_chat_id")
     return not g or update.effective_user.id == int(g)
@@ -3652,6 +3725,7 @@ def montar_app(token: str) -> Application:
     app.add_handler(CommandHandler("conferir", cmd_conferir))
     app.add_handler(CallbackQueryHandler(botao_baixa, pattern=r"^bx\|"))
     app.add_handler(CommandHandler("reativar", cmd_reativar))
+    app.add_handler(CommandHandler("apagar", cmd_apagar))
     app.add_handler(CallbackQueryHandler(botao_reativar, pattern=r"^ocr\|"))
     app.add_handler(CommandHandler("cancelar", cmd_cancelar))
     app.add_handler(CallbackQueryHandler(botao_alerta, pattern=r"^al\|"))

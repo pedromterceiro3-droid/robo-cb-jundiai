@@ -51,6 +51,14 @@ def dados() -> dict:
     d.setdefault("enviados", {})
     d.setdefault("classificar", {})
     d.setdefault("cobrado_grupo", {})  # rotina|período → {em, link}: já foi cobrado 1 vez no grupo
+    # rotina que mudou para "vários dias na semana": reencaixa entregas antigas pelo dia/hora em que foram feitas
+    for e in d["evid"]:
+        r = rot(e.get("rotina", ""))
+        if r and r.get("tipo") == "semanal" and len(r.get("dias", [])) > 1 and not str(e.get("periodo", "")).endswith("-D"):
+            try:
+                e["periodo"] = periodo(r, datetime.fromisoformat(e["em"]))[0]
+            except Exception:
+                pass
     return d
 
 
@@ -116,6 +124,10 @@ def periodo(r: dict, quando: datetime):
             base = quando.date()
             fim = em(base, t)
         return base.isoformat(), fim, base.strftime("%d/%m")
+    if freq == "semanal" and len(r.get("dias", [])) > 1:
+        # vários dias na semana (ex.: seg, qua, sex): cada dia de prazo fecha um período
+        fim = proximo_prazo(r, quando)
+        return f"{fim:%Y-%m-%d}-D", fim, f"{NOMES_DIA[fim.weekday()]} {fim:%d/%m}"
     if freq == "semanal":
         seg = quando.date() - timedelta(days=quando.weekday())
         fim = em(seg + timedelta(days=DIAS[r.get("dia", "seg")]), r.get("prazo", "23:59"))
@@ -135,9 +147,31 @@ def periodo(r: dict, quando: datetime):
     return f"{d:%Y-%m}", em(ultimo_dia(d), r.get("prazo", "23:59")), f"{d:%m/%Y}"
 
 
+def proximo_prazo(r: dict, quando: datetime) -> datetime:
+    """Primeiro prazo (dia da lista + horário) que ainda não passou em 'quando'."""
+    dias = {DIAS[x] for x in r.get("dias", [])}
+    d = quando.date()
+    for k in range(8):
+        c = d + timedelta(days=k)
+        if c.weekday() in dias and em(c, r.get("prazo", "23:59")) >= quando:
+            return em(c, r.get("prazo", "23:59"))
+    return em(d + timedelta(days=7), r.get("prazo", "23:59"))
+
+
+def prazo_anterior(r: dict, fim: datetime) -> datetime:
+    dias = {DIAS[x] for x in r.get("dias", [])}
+    for k in range(1, 8):
+        c = fim.date() - timedelta(days=k)
+        if c.weekday() in dias:
+            return em(c, r.get("prazo", "23:59"))
+    return fim - timedelta(days=7)
+
+
 def periodo_anterior(r: dict, quando: datetime):
     tipo = r.get("frequencia", r.get("tipo", "diaria"))
     chave, fim, _ = periodo(r, quando)
+    if tipo == "semanal" and len(r.get("dias", [])) > 1:
+        return periodo(r, prazo_anterior(r, fim))
     if tipo == "diaria":
         return periodo(r, fim - timedelta(days=1, hours=1))
     if tipo == "semanal":
@@ -189,6 +223,13 @@ def marcos(r: dict, pchave: str, fim: datetime, feitos: int) -> list[tuple[datet
     elif freq == "diaria":
         L = [(fim - timedelta(minutes=30), "lembrete"), (fim, "cobranca"),
              (fim + timedelta(minutes=30), "alerta"), (fim + timedelta(minutes=60), "alerta")]
+    elif freq == "semanal" and len(r.get("dias", [])) > 1:
+        # lembrete no dia às 10:00 (se o prazo for depois), cobrança no prazo, alerta no dia seguinte 10:00
+        dia = fim.date()
+        if em(dia, "10:00") < fim:
+            L.append((em(dia, "10:00"), "lembrete"))
+        L.append((fim, "cobranca"))
+        L.append((em(dia + timedelta(days=1), "10:00"), "alerta"))
     elif freq == "semanal":
         dia = fim.date()
         L = [(em(dia - timedelta(days=1), "10:00"), "lembrete")]
@@ -248,7 +289,8 @@ def texto_cobranca(r: dict, nivel: str, rotulo: str, fim: datetime, feitos: int)
     if r.get("tipo") in ("mensal", "quinzenal") and fim.time() == time(23, 59):
         prazo = f"até {fim:%d/%m}"
     onde = (f"Poste a evidência no tópico <b>{B.esc(nome_topico(r['topico']))}</b>"
-            + (f" e toque em <b>{B.esc(r['botao'])}</b>" if r.get("botao") else "")
+            + (f" e toque em <b>{B.esc(r['botao'])}</b>" if r.get("botao") and sum(
+                1 for x in rotinas() if x.get("topico") == r.get("topico") and x.get("tipo") != "diretor") > 1 else "")
             + ", ou toque em Feito abaixo.") if r.get("tipo") != "diretor" else "Quando concluir, toque em Feito."
     if nivel == "lembrete":
         L = [f"⏰ <b>{B.esc(r['nome'])}</b>", "",
@@ -410,11 +452,116 @@ def link_msg(msg) -> str:
     return link
 
 
-def registrar(d: dict, r: dict, quando: datetime, quem: str, via: str, link: str = "", texto: str = ""):
-    pchave, _, rotulo = periodo(r, quando)
-    d["evid"].append({"rotina": r["id"], "periodo": pchave, "em": quando.isoformat(timespec="minutes"),
-                      "quem": quem, "via": via, "link": link, "texto": texto[:300]})
+def registrar(d: dict, r: dict, quando: datetime, quem: str, via: str, link: str = "", texto: str = "",
+              postada: datetime | None = None):
+    """'quando' = momento que define o período (data citada ou hora da postagem)."""
+    pchave, fim, rotulo = periodo(r, quando)
+    ev = {"rotina": r["id"], "periodo": pchave, "em": (postada or quando).isoformat(timespec="minutes"),
+          "quem": quem, "via": via, "link": link, "texto": texto[:300]}
+    if postada and postada > fim:
+        ev["fora_do_prazo"] = True
+    d["evid"].append(ev)
     return pchave, rotulo
+
+
+_OBRIGADO = ["Obrigado, {n}!", "Valeu, {n}!", "Show, {n}, obrigado!", "Obrigado pelo capricho, {n}!",
+             "Muito bom, {n}, valeu!"]
+
+
+def texto_obrigado(r: dict, rotulo: str, feitos: int, quem: str) -> str:
+    """Agradecimento depois de uma entrega (emoji no fim da linha por causa do Telegram do Pedro)."""
+    import random
+    n = B.esc((quem or "equipe").split(" ")[0])
+    L = [f"{random.choice(_OBRIGADO).format(n=n)} 🙌",
+         f"<b>{B.esc(r.get('nome_curto', r['nome']))}</b> registrado ({B.esc(rotulo)}) ✅"]
+    m = meta(r)
+    if m > 1:
+        L.append(f"Meta batida: {feitos} de {m} 🎯" if feitos >= m else f"Andamento: {feitos} de {m} – falta {m - feitos}")
+    return "\n".join(L)
+
+
+async def agradecer(bot, chat, thread, msg_id, texto):
+    """Reação na foto/mensagem entregue + mensagem de agradecimento respondendo a ela."""
+    if not cfg().get("agradecer", True):
+        return
+    from types import SimpleNamespace
+    await B.reagir(bot, SimpleNamespace(chat=SimpleNamespace(id=chat), message_id=msg_id), cfg().get("reacao", "🙏"))
+    return await B.enviar(bot, chat, texto, message_thread_id=thread or None, reply_to_message_id=msg_id)
+
+
+def ligar_msg(d: dict, chat, mid, link: str):
+    """Liga uma mensagem (a postagem ou o agradecimento do robô) à entrega, para o /apagar desfazer."""
+    if mid is None or not link:
+        return
+    m = d.setdefault("msg_evid", {})
+    m[f"{chat}:{mid}"] = link
+    if len(m) > 400:
+        d["msg_evid"] = dict(list(m.items())[-400:])
+
+
+ULTIMO_LINK_DESFEITO = []
+
+
+def desfazer(chat, mid) -> list[str]:
+    """/apagar respondendo à postagem ou ao agradecimento: tira a entrega registrada."""
+    d = dados()
+    link = d.get("msg_evid", {}).get(f"{chat}:{mid}")
+    if not link:
+        return []
+    ULTIMO_LINK_DESFEITO[:] = [link]
+    tirou = [e for e in d["evid"] if e.get("link") == link]
+    d["evid"] = [e for e in d["evid"] if e.get("link") != link]
+    d["msg_evid"] = {k: v for k, v in d.get("msg_evid", {}).items() if v != link}
+    gravar(d)
+    saida = []
+    for e in tirou:
+        r = rot(e["rotina"])
+        saida.append(f"{r.get('nome_curto', r['nome']) if r else e['rotina']} ({e['periodo']}) – {e.get('quem', '?')}")
+    return saida
+
+
+def msg_da_postagem(link: str):
+    """'https://t.me/c/999/9?thread=11' → 9"""
+    try:
+        return int(link.split("?")[0].rstrip("/").split("/")[-1])
+    except Exception:
+        return None
+
+
+def data_citada(texto: str, postada: datetime):
+    """Data escrita na postagem ("relatório 22/11", "ref. 22/11/26", "de ontem").
+    Só vale data passada e recente (até 'dias_data_citada' dias, padrão 35)."""
+    import re as _re
+    t = B.normalizar(texto or "").lower()
+    hoje = postada.date()
+    achou = None
+    m = _re.search(r"(?<!\d)(\d{1,2})\s*[/.\-]\s*(\d{1,2})(?:\s*[/.\-]\s*(\d{2,4}))?(?!\d)", t)
+    if m:
+        dia, mes = int(m.group(1)), int(m.group(2))
+        ano = int(m.group(3)) if m.group(3) else hoje.year
+        if ano < 100:
+            ano += 2000
+        try:
+            achou = date(ano, mes, dia)
+            if not m.group(3) and achou > hoje:  # "28/12" escrito em janeiro = ano passado
+                achou = date(ano - 1, mes, dia)
+        except ValueError:
+            achou = None
+    elif _re.search(r"\banteontem\b", t):
+        achou = hoje - timedelta(days=2)
+    elif _re.search(r"\bontem\b", t):
+        achou = hoje - timedelta(days=1)
+    if not achou or achou > hoje or (hoje - achou).days > int(cfg().get("dias_data_citada", 35)):
+        return None
+    return achou
+
+
+def quando_referencia(texto: str, postada: datetime) -> datetime:
+    """Momento que vale para a entrega: a data citada no texto (meio-dia) ou a hora da postagem."""
+    d = data_citada(texto, postada)
+    if d and d != postada.date():
+        return datetime.combine(d, time(12, 0), tzinfo=B.FUSO)
+    return postada
 
 
 def vale_como_evidencia(msg) -> bool:
@@ -448,9 +595,17 @@ async def on_mensagem(update: Update, context) -> bool:
     d = dados()
     if len(cands) == 1:
         r = cands[0]
-        registrar(d, r, quando, quem, "postagem", link_msg(msg), texto)
+        pchave, rotulo = registrar(d, r, quando_referencia(texto, quando), quem, "postagem", link_msg(msg),
+                                   texto, postada=quando)
         gravar(d)
-        await B.reagir(context.bot, msg)
+        ligar_msg(d, msg.chat.id, msg.message_id, link_msg(msg))
+        if cfg().get("agradecer", True):
+            m = await agradecer(context.bot, msg.chat.id, msg.message_thread_id if msg.is_topic_message else None,
+                                msg.message_id, texto_obrigado(r, rotulo, len(entregas(d, r["id"], pchave)), quem))
+            ligar_msg(d, msg.chat.id, getattr(m, "message_id", None), link_msg(msg))
+        else:
+            await B.reagir(context.bot, msg)
+        gravar(d)
         return True
     d["classificar"][str(msg.message_id)] = {
         "chat": msg.chat.id, "thread": msg.message_thread_id if msg.is_topic_message else 0,
@@ -489,17 +644,22 @@ async def botao_classificar(update: Update, context):
         return
     del d["classificar"][mid]
     quando = datetime.fromisoformat(p["em"])
-    pchave, rotulo = registrar(d, r, quando, p["quem"], f"postagem (botão de {q.from_user.full_name})",
-                               p["link"], p["texto"])
+    pchave, rotulo = registrar(d, r, quando_referencia(p["texto"], quando), p["quem"],
+                               f"postagem (botão de {q.from_user.full_name})", p["link"], p["texto"], postada=quando)
+    ligar_msg(d, p["chat"], int(mid), p["link"])
+    ligar_msg(d, p["chat"], q.message.message_id, p["link"])
     gravar(d)
     feitos = len(entregas(d, rid, pchave))
-    await q.answer("Registrado!")
-    extra = f" · {feitos} de {meta(r)} no período" if meta(r) > 1 else ""
-    try:
-        await q.edit_message_text(B.limpar_texto(f"✅ Registrado como <b>{B.esc(r['nome'])}</b> "
-                                                 f"({B.esc(rotulo)}){extra}."), parse_mode=ParseMode.HTML)
+    await q.answer("Registrado! Obrigado!")
+    try:  # a pergunta "o que foi postado?" vira o agradecimento
+        await q.edit_message_text(B.limpar_texto(texto_obrigado(r, rotulo, feitos, p["quem"])),
+                                  parse_mode=ParseMode.HTML)
     except Exception:
         pass
+    if cfg().get("agradecer", True):
+        from types import SimpleNamespace
+        await B.reagir(context.bot, SimpleNamespace(chat=SimpleNamespace(id=p["chat"]), message_id=int(mid)),
+                       cfg().get("reacao", "🙏"))
 
 
 async def botao_feito_bar(update: Update, context):
@@ -519,12 +679,14 @@ async def botao_feito_bar(update: Update, context):
                       "quem": q.from_user.full_name, "via": "botão Feito", "link": "", "texto": ""})
     gravar(d)
     feitos = len(entregas(d, rid, pchave))
-    await q.answer("Anotado!")
+    await q.answer("Anotado! Obrigado!")
     resto = "" if feitos >= meta(r) else f" Ainda falta {meta(r) - feitos}."
+    obrigado = (f"\nObrigado, {B.esc(q.from_user.first_name or q.from_user.full_name)}! 🙌"
+                if cfg().get("agradecer", True) and q.message.chat.id < 0 else "")
     try:
         await q.edit_message_text(B.limpar_texto(
             f"✅ <b>{B.esc(r['nome'])}</b>: marcado como feito por {B.esc(q.from_user.full_name)} "
-            f"às {quando:%H:%M}.{resto}"), parse_mode=ParseMode.HTML)
+            f"às {quando:%H:%M}.{resto}{obrigado}"), parse_mode=ParseMode.HTML)
     except Exception:
         pass
 
@@ -612,8 +774,10 @@ def texto_resumo(d: dict, base: date) -> str:
         es = entregas(d, r["id"], base.isoformat())
         if es:
             e = es[0]
+            quando_txt = (f"em {e['em'][8:10]}/{e['em'][5:7]} às {e['em'][11:16]} (fora do prazo)"
+                          if e.get("fora_do_prazo") else f"às {e['em'][11:16]}")
             L.append(f"{B.esc(r.get('nome_curto', r['nome']))}: {B.esc(e['quem'].split(' ')[0])} "
-                     f"às {e['em'][11:16]} ✅")
+                     f"{quando_txt} ✅")
         else:
             L.append(f"{B.esc(r.get('nome_curto', r['nome']))}: não entregue ❌")
     return "\n".join(L)
