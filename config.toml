@@ -108,6 +108,7 @@ juntar_segundos = 120            # foto + texto da mesma pessoa em até 2 min = 
 palavras_resolvido = ["resolvido", "resolvida", "concluído", "concluída", "finalizado"]
 palavras_andamento = ["em andamento", "andamento", "verificando", "vou verificar", "estou vendo"]
 avisar_baixa_privado = true      # cada baixa chega no privado do gestor (foto, quem baixou, data) com botão Reativar
+apagar_ao_concluir = true        # concluída: apaga do grupo as mensagens do robô sobre ela (o backup fica no privado)
 # Palavras-chave (vale a raiz: "quebr" pega quebra, quebrou, quebrado; maiúsculas e acentos não importam)
 #   palavras_abrem     → a mensagem/foto vira ocorrência na hora
 #   palavras_perguntam → o robô pergunta "isso é uma ocorrência?" com botão Sim / Não

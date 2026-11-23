@@ -898,6 +898,92 @@ def no_topico_ocorrencias(msg) -> bool:
     return int(top) == int(atual or 0)
 
 
+class _Enviada:
+    def __init__(self, chat_id, message_id):
+        self.chat_id, self.message_id = chat_id, message_id
+
+
+async def oc_enviar_com_foto(bot, chat, thread, o: dict, texto: str, kb=None):
+    """Manda a ocorrência com a FOTO aberta (cópia da foto original com o texto embaixo).
+    Sem foto, ou se a cópia falhar, manda só o texto."""
+    if not chat:
+        return None
+    if o.get("foto") and o.get("msg_ids"):
+        destino, kb2, legenda = chat, kb, limpar_texto(texto)
+        quem_testa = TESTE.get()
+        if quem_testa:
+            legenda += f"\n\n<i>TESTE – no dia a dia vai para: {esc(nome_destino(chat, thread))}</i>"
+            destino, thread, kb2 = quem_testa, None, teclado_de_teste(kb) if kb else None
+        if len(legenda) > 1000:
+            legenda = legenda[:990] + "…"
+        try:
+            r = await bot.copy_message(destino, o["chat_id"], o["msg_ids"][0], caption=legenda,
+                                       parse_mode=ParseMode.HTML, message_thread_id=thread or None,
+                                       **({"reply_markup": kb2} if kb2 else {}))
+            return _Enviada(destino, r.message_id)
+        except Exception as e:
+            log.warning("Não consegui copiar a foto da ocorrência #%s: %s", o.get("num"), e)
+    r = await enviar(bot, chat, texto, message_thread_id=thread or None, **({"reply_markup": kb} if kb else {}))
+    return _Enviada(r.chat.id if hasattr(r, "chat") else chat, r.message_id) if r is not None else None
+
+
+def oc_lembrar_msg(num, enviada):
+    """Guarda as mensagens do robô sobre a ocorrência no grupo, para apagar quando for concluída."""
+    if enviada is None or TESTE.get() or int(enviada.chat_id) > 0:
+        return
+    dados = oc_dados()
+    o = dados["itens"].get(str(num))
+    if o is not None:
+        lista = o.setdefault("robo_msgs", [])
+        if [int(enviada.chat_id), enviada.message_id] not in lista:
+            lista.append([int(enviada.chat_id), enviada.message_id])
+            gravar(ARQ_OCORR, dados)
+
+
+async def oc_limpar_grupo(bot, num, extra=None):
+    """Concluída: apaga do grupo as mensagens do robô sobre ela (registro, cartões, avisos)."""
+    dados = oc_dados()
+    o = dados["itens"].get(str(num))
+    if not o:
+        return
+    msgs = list(o.get("robo_msgs", []))
+    if o.get("msg_robo") and saida_separada():
+        c, _ = oc_saida()
+        msgs.append([int(c), o["msg_robo"]])
+    elif o.get("msg_robo"):
+        msgs.append([int(o["chat_id"]), o["msg_robo"]])
+    if extra:
+        msgs.append(list(extra))
+    feitos = set()
+    for chat, mid in msgs:
+        # no privado só apaga o cartão em que o botão foi tocado (o backup chega logo em seguida)
+        if (chat, mid) in feitos or (int(chat) > 0 and not (extra and [chat, mid] == list(extra))):
+            continue
+        feitos.add((chat, mid))
+        try:
+            await bot.delete_message(chat, mid)
+        except Exception as e:  # sem permissão de apagar: pelo menos tira os botões
+            log.info("Não consegui apagar a mensagem %s da ocorrência #%s: %s", mid, num, e)
+            aviso = f"✅ Ocorrência #{num} concluída"
+            try:
+                await bot.edit_message_caption(chat, mid, caption=aviso, reply_markup=None)
+            except Exception:
+                try:
+                    await bot.edit_message_text(aviso, chat, mid, reply_markup=None)
+                except Exception:
+                    pass
+    o["robo_msgs"] = []
+    o.pop("msg_robo", None)
+    gravar(ARQ_OCORR, dados)
+
+
+async def oc_concluida(bot, num, extra=None):
+    """Depois de concluir: backup no privado do gestor e limpeza do grupo."""
+    await oc_baixa_privado(bot, num)
+    if oc_cfg().get("apagar_ao_concluir", True):
+        await oc_limpar_grupo(bot, num, extra)
+
+
 def oc_resolver(dados: dict, num: str, quem: str) -> dict | None:
     o = dados["itens"].get(str(num))
     if not o or o.get("resolvida"):
@@ -938,11 +1024,6 @@ async def oc_baixa_privado(bot, num):
     r = o["resolvida"]
     criada = datetime.fromisoformat(o["criada"])
     baixa = datetime.fromisoformat(r["em"])
-    if o.get("foto"):
-        try:
-            await bot.copy_message(int(g), o["chat_id"], o["msg_ids"][0])
-        except Exception as e:
-            log.warning("Não consegui copiar a foto da ocorrência #%s: %s", num, e)
     reat = len(o.get("historico", []))
     L = [f"✅ <b>Ocorrência #{num} baixada</b>", "",
          esc(o.get("texto") or "(só foto)"), "",
@@ -955,7 +1036,7 @@ async def oc_baixa_privado(bot, num):
     L.append(f"• <a href=\"{oc_link(o)}\">Ver a mensagem original no grupo</a>")
     L += ["", "<i>Baixa feita por engano? Toque em Reativar.</i>"]
     teclado = InlineKeyboardMarkup([[InlineKeyboardButton(f"↩️ Reativar #{num}", callback_data=f"ocr|{num}")]])
-    await enviar(bot, int(g), "\n".join(L), reply_markup=teclado)
+    await oc_enviar_com_foto(bot, int(g), None, o, "\n".join(L), teclado)
 
 
 async def oc_avisar_reativada(bot, num, quem):
@@ -963,11 +1044,13 @@ async def oc_avisar_reativada(bot, num, quem):
     if not o:
         return
     c, t = oc_saida()
-    link = f"<a href=\"{oc_link(o)}\">{'📷 ver foto' if o.get('foto') else '↗ ver mensagem'}</a>"
-    resumo = esc((o.get("texto") or "(só foto)")[:120])
-    await enviar(bot, c, f"↩️ <b>Ocorrência #{num} reativada</b> – volta para 🔴 Pendente\n\n"
-                         f"{resumo}\n<i>Reativada por {esc(quem)} · {datetime.now(FUSO):%d/%m %H:%M}</i> · {link}",
-                 message_thread_id=t or None, reply_markup=botao_oc(num, o))
+    resumo = esc((o.get("texto") or "(só foto)")[:300])
+    r = await oc_enviar_com_foto(bot, c, t or None, o,
+                                 f"↩️ <b>Ocorrência #{num} reativada</b> – volta para 🔴 Pendente\n\n"
+                                 f"{resumo}\n<i>Reativada por {esc(quem)} · {datetime.now(FUSO):%d/%m %H:%M}</i>"
+                                 f" · <a href=\"{oc_link(o)}\">↗ ver no grupo</a>",
+                                 botao_oc(num, o))
+    oc_lembrar_msg(num, r)
 
 
 async def botao_reativar(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -983,9 +1066,13 @@ async def botao_reativar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await q.answer(f"#{num} reativada")
     try:
-        await q.edit_message_text(limpar_texto((q.message.text_html or q.message.text or "")
-                                               + f"\n\n<b>Reativada às {datetime.now(FUSO):%H:%M} – voltou para Pendente.</b>"),
-                                  parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        nota = f"\n\n<b>Reativada às {datetime.now(FUSO):%H:%M} – voltou para Pendente.</b>"
+        if q.message.photo:
+            await q.edit_message_caption(caption=limpar_texto((q.message.caption_html or "") + nota)[:1024],
+                                         parse_mode=ParseMode.HTML)
+        else:
+            await q.edit_message_text(limpar_texto((q.message.text_html or q.message.text or "") + nota),
+                                      parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     except Exception:
         pass
     await oc_avisar_reativada(context.bot, num, q.from_user.full_name)
@@ -1058,12 +1145,23 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 break
         if num and eh_resolvido(texto):
             if oc_resolver(dados, num, quem):
-                await oc_avisar(context.bot, msg, f"✅ Ocorrência #{num} concluída por {esc(quem)}.")
-                await oc_baixa_privado(context.bot, num)
+                await reagir(context.bot, msg, "👍")  # confirma sem poluir o grupo
+                await oc_concluida(context.bot, num)
         elif num and eh_andamento(texto):
             if oc_andamento(dados, num, quem):
-                await oc_avisar(context.bot, msg, f"🟡 Ocorrência #{num} em andamento ({esc(quem)}).",
-                                reply_markup=botao_oc(num, dados["itens"][num]))
+                r = await oc_avisar(context.bot, msg, f"🟡 Ocorrência #{num} em andamento ({esc(quem)}).",
+                                    reply_markup=botao_oc(num, dados["itens"][num]))
+                if r is not None:
+                    oc_lembrar_msg(num, _Enviada(r.chat.id, r.message_id))
+        elif num and pede_abrir(texto):  # pediu para abrir, mas essa foto já é uma ocorrência
+            o = dados["itens"][num]
+            r = await enviar(context.bot, msg.chat.id,
+                             f"📌 Essa foto já está registrada como <b>Ocorrência #{num}</b> – {oc_situacao(o)}",
+                             message_thread_id=msg.message_thread_id if msg.is_topic_message else None,
+                             reply_to_message_id=msg.message_id,
+                             **({"reply_markup": botao_oc(num, o)} if not o.get("resolvida") else {}))
+            if r is not None and not o.get("resolvida"):
+                oc_lembrar_msg(num, _Enviada(r.chat.id, r.message_id))
         elif not num and pede_abrir(texto) and no_topico_ocorrencias(msg) and not no_topico_saida(msg) \
                 and not (alvo.from_user and alvo.from_user.is_bot):
             await oc_abrir_por_resposta(context.bot, dados, msg, alvo, quem)
@@ -1234,15 +1332,14 @@ async def oc_registrar(bot, dados: dict, item: dict) -> str:
     if item.get("aberta_por"):
         quem += f" (aberta por {item['aberta_por']})"
     if saida_separada():
-        resumo = esc(texto[:120] + ("…" if len(texto) > 120 else "")) if texto else "(só foto)"
-        link = f"<a href=\"{oc_link(item)}\">{'📷 ver foto' if item.get('foto') else '↗ ver mensagem'}</a>"
+        resumo = esc(texto[:300] + ("…" if len(texto) > 300 else "")) if texto else "(só foto)"
+        link = f"<a href=\"{oc_link(item)}\">{'↗ ver no grupo' if item.get('foto') else '↗ ver mensagem'}</a>"
         c, t = oc_saida()
-        r = await enviar(bot, c,
-                         f"📌 <b>Ocorrência #{num} registrada</b> – 🔴 Pendente\n\n"
-                         f"{resumo}\n"
-                         f"<i>{esc(quem)} · {datetime.fromisoformat(item['criada']):%d/%m %H:%M}</i> · {link}\n\n"
-                         f"Use os botões abaixo para atualizar.",
-                         message_thread_id=t or None, reply_markup=botao_oc(num))
+        r = await oc_enviar_com_foto(bot, c, t or None, item,
+                                     f"📌 <b>Ocorrência #{num} registrada</b> – 🔴 Pendente\n\n"
+                                     f"{resumo}\n"
+                                     f"<i>{esc(quem)} · {datetime.fromisoformat(item['criada']):%d/%m %H:%M}</i> · {link}",
+                                     botao_oc(num))
     else:
         r = await enviar(bot, item["chat_id"],
                          f"📌 Ocorrência #{num} registrada – 🔴 Pendente\n\n"
@@ -1299,15 +1396,31 @@ async def oc_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not o:
             await q.answer("Essa ocorrência já estava concluída.")
             return
-        await q.answer(f"#{num} concluída!")
-        aviso = f"✅ Ocorrência #{num} concluída – {esc(quem)}"
-        await oc_baixa_privado(context.bot, num)
-    # atualiza a mensagem onde o botão foi tocado
+        await q.answer(f"#{num} concluída! Backup enviado ao gestor.")
+        m = q.message
+        texto_atual = m.text or m.caption or ""
+        if texto_atual.startswith("📋"):  # lista antiga (tudo numa mensagem): só redesenha
+            try:
+                texto, teclado = oc_texto_lista()
+                await q.edit_message_text(limpar_texto(texto), parse_mode=ParseMode.HTML,
+                                          reply_markup=teclado, disable_web_page_preview=True)
+            except Exception:
+                pass
+            await oc_concluida(context.bot, num)
+        else:  # apaga esta mensagem e as demais do robô sobre a ocorrência; backup vai pro privado
+            await oc_concluida(context.bot, num, extra=(m.chat.id, m.message_id))
+        return
+    # em andamento: atualiza a mensagem onde o botão foi tocado
     try:
-        texto_atual = q.message.text or ""
-        if texto_atual.startswith("#"):  # cartão da lista: atualiza só esta ocorrência
-            await q.edit_message_text(limpar_texto(oc_cartao(o)), parse_mode=ParseMode.HTML,
-                                      reply_markup=botao_oc(num, o), disable_web_page_preview=True)
+        m = q.message
+        texto_atual = m.text or m.caption or ""
+        if texto_atual.startswith("#") or texto_atual.startswith("📌"):  # cartão ou registro
+            if m.photo:
+                await q.edit_message_caption(caption=limpar_texto(oc_cartao(o))[:1024], parse_mode=ParseMode.HTML,
+                                             reply_markup=botao_oc(num, o))
+            else:
+                await q.edit_message_text(limpar_texto(oc_cartao(o)), parse_mode=ParseMode.HTML,
+                                          reply_markup=botao_oc(num, o), disable_web_page_preview=True)
         elif texto_atual.startswith("📋"):  # lista antiga (tudo numa mensagem): redesenha inteira
             texto, teclado = oc_texto_lista()
             await q.edit_message_text(limpar_texto(texto), parse_mode=ParseMode.HTML,
@@ -1325,9 +1438,11 @@ async def oc_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
     m = q.message
     no_registro_da_saida = (sc and m.chat.id == int(sc)
                             and int((m.message_thread_id if m.is_topic_message else 0) or 0) == int(st or 0)
-                            and not (m.text or "").startswith("📋"))
+                            and not (m.text or m.caption or "").startswith("📋"))
     if not no_registro_da_saida:
-        await enviar(context.bot, sc or o["chat_id"], aviso, message_thread_id=st or None)
+        r = await enviar(context.bot, sc or o["chat_id"], aviso, message_thread_id=st or None)
+        if r is not None:
+            oc_lembrar_msg(num, _Enviada(r.chat.id, r.message_id))
 
 
 def oc_texto_lista() -> tuple[str, InlineKeyboardMarkup | None]:
@@ -1380,7 +1495,7 @@ def oc_cartao(o: dict) -> str:
     dias = (agora.date() - criada.date()).days
     idade = "hoje" if dias == 0 else ("há 1 dia" if dias == 1 else f"há {dias} dias")
     texto = esc(o["texto"][:300] + ("…" if len(o["texto"]) > 300 else "")) or "(só foto)"
-    link = f"<a href=\"{oc_link(o)}\">{'📷 ver foto' if o.get('foto') else '↗ ver mensagem'}</a>"
+    link = f"<a href=\"{oc_link(o)}\">{'↗ ver no grupo' if o.get('foto') else '↗ ver mensagem'}</a>"
     L = [f"<b>#{o['num']}</b> {oc_situacao(o)}" + ("" if o.get("resolvida") else f" · {idade}"),
          texto,
          f"<i>{esc(o['autor'])} · {criada.strftime('%d/%m %H:%M')}</i> · {link}"]
@@ -1409,7 +1524,8 @@ async def oc_enviar_lista(bot, chat, thread=None):
         cab += "\n\n<i>Cada ocorrência vem a seguir, com os botões logo abaixo.</i>"
     await enviar(bot, chat, cab, message_thread_id=thread)
     for o in abertas[:40]:
-        await enviar(bot, chat, oc_cartao(o), message_thread_id=thread, reply_markup=botao_oc(o["num"], o))
+        r = await oc_enviar_com_foto(bot, chat, thread, o, oc_cartao(o), botao_oc(o["num"], o))
+        oc_lembrar_msg(o["num"], r)
     if len(abertas) > 40:
         await enviar(bot, chat, f"… e mais {len(abertas) - 40} ocorrências. Use /pendencias para ver.",
                      message_thread_id=thread)
@@ -1485,7 +1601,7 @@ async def cmd_resolver(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dados = oc_dados()
     ok = [n for n in nums if oc_resolver(dados, n, update.effective_user.full_name)]
     for n in ok:
-        await oc_baixa_privado(context.bot, n)
+        await oc_concluida(context.bot, n)
     await update.message.reply_text(
         f"✅ Resolvida(s): {', '.join('#' + n for n in ok)}" if ok
         else "Nenhuma ocorrência em aberto com esse número.")
