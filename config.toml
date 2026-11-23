@@ -164,7 +164,7 @@ intervalo_fila_seg = 60          # de quanto em quanto tempo olha a fila
 avisar_fila_zerada = true
 status_na_fila = ["waiting", "notified"]   # situações que contam como "na fila"
 resumo_reservas = "10:00"        # horário do resumo diário
-resumo_modo = "amanha"           # o resumo mostra as reservas de AMANHÃ
+resumo_modo = "hoje_e_amanha"    # duas mensagens: reservas de HOJE e, separada, as de AMANHÃ ("amanha" = só amanhã)
 
 [tagme.periodos]
 # Almoço até 17h; Jantar a partir das 17h (sem happy hour).

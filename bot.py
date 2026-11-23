@@ -2717,6 +2717,34 @@ def _procurar_nome(o, prof=0) -> str:
     return ""
 
 
+_NOME_RUIM = ("username", "filename", "typename", "statusname", "venuename", "tablename", "areaname",
+              "sectionname", "companyname", "partnername", "sourcename", "channelname", "eventname",
+              "occasionname", "tagname", "createdbyname", "updatedbyname", "employeename", "staffname")
+
+
+def _nome_profundo(o, caminho="", prof=0, achados=None):
+    """Último recurso: varre a reserva inteira atrás de qualquer campo de nome de pessoa."""
+    if achados is None:
+        achados = []
+    if prof > 4:
+        return achados
+    if isinstance(o, dict):
+        for k, v in o.items():
+            kl = k.lower().replace("_", "").replace("-", "")
+            cam = f"{caminho}.{kl}"
+            if any(t in cam for t in _NAO_E_PESSOA):
+                continue
+            if isinstance(v, str) and v.strip() and ("name" in kl or "nome" in kl) and kl not in _NOME_RUIM \
+                    and not v.strip().startswith(("http", "{")) and not any(ch.isdigit() for ch in v[:3]):
+                achados.append((prof, 0 if kl in ("fullname", "name", "nome", "displayname") else 1, v))
+            elif isinstance(v, (dict, list)):
+                _nome_profundo(v, cam, prof + 1, achados)
+    elif isinstance(o, list):
+        for v in o[:3]:
+            _nome_profundo(v, caminho, prof + 1, achados)
+    return achados
+
+
 def _nome_completo(o: dict) -> str:
     v = _c(o, "name", "guestName", "customerName", "fullName", padrao="")
     if isinstance(v, dict):
@@ -2731,8 +2759,35 @@ def _nome_completo(o: dict) -> str:
                     break
     if not v:
         v = _procurar_nome(o)
+    if not v:
+        ach = _nome_profundo(o)
+        if ach:
+            ach.sort(key=lambda x: (x[0], x[1]))
+            # nome + sobrenome separados (firstName / lastName)
+            prim = next((x[2] for x in ach if x[1] == 1), "")
+            v = ach[0][2] if ach[0][1] == 0 else prim
+    if not v:
+        _logar_sem_nome(o)
     v = " ".join(str(v).split()).strip(" -–—.,") if v else ""
     return v.title() if v else "(sem nome)"
+
+
+_SEM_NOME_LOGADO = []
+
+
+def _logar_sem_nome(o):
+    """Registra no log (uma vez) a ESTRUTURA da reserva sem nome — só os nomes dos campos, sem dados."""
+    if _SEM_NOME_LOGADO:
+        return
+    _SEM_NOME_LOGADO.append(1)
+
+    def campos(d, prof=0):
+        if isinstance(d, dict):
+            return {k: campos(v, prof + 1) if prof < 4 else type(v).__name__ for k, v in d.items()}
+        if isinstance(d, list):
+            return [campos(d[0], prof + 1)] if d and prof < 4 else "lista"
+        return type(d).__name__
+    log.warning("TAGME SEM NOME – campos da reserva: %s", json.dumps(campos(o), ensure_ascii=False)[:3000])
 
 
 def _etiqueta(st: str, realizado: bool) -> str:
@@ -2786,7 +2841,12 @@ def titulo_dia(titulo: str) -> str:
     return {"Amanhã": "de amanhã", "Hoje": "de hoje", "Ontem": "de ontem"}.get(titulo, "do dia")
 
 
-def botoes_tagme() -> InlineKeyboardMarkup:
+def botoes_tagme(modo: str = "amanha") -> InlineKeyboardMarkup:
+    if modo == "hoje":
+        return InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Atualizar hoje", callback_data="tg|hoje"),
+                                      InlineKeyboardButton("🕒 Fila agora", callback_data="tg|agora")]])
+    if modo == "amanha":
+        return InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Atualizar amanhã", callback_data="tg|amanha")]])
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Reservas de amanhã", callback_data="tg|amanha"),
                                   InlineKeyboardButton("🕒 Hoje e fila agora", callback_data="tg|agora")]])
 
@@ -2832,7 +2892,8 @@ async def montar_tagme(modo: str) -> str:
             L.append(f"Hoje já passaram pela fila: {plural(est['grupos_dia'], 'grupo')}, "
                      f"{plural(est['pessoas_dia'], 'pessoa')} (pico de {est.get('pico', 0)})")
     else:
-        dia = h + timedelta(days=1) if modo == "amanha" else date.fromisoformat(modo)
+        dia = (h + timedelta(days=1) if modo == "amanha" else h if modo == "hoje"
+               else date.fromisoformat(modo))
         r = await asyncio.wait_for(asyncio.to_thread(TG.reservas, dia), 120)
         titulo = "Amanhã" if dia == h + timedelta(days=1) else ("Hoje" if dia == h else
                  ("Ontem" if dia == h - timedelta(days=1) else "Reservas do dia"))
@@ -2847,18 +2908,21 @@ async def resumo_tagme(context: ContextTypes.DEFAULT_TYPE, chat_destino=None, th
     modo = modo or tg_cfg().get("resumo_modo", "amanha")
     if not TG:
         return
-    try:
-        texto = await montar_tagme(modo)
-    except Exception as e:
-        await tg_erro(context.bot, e)
+    # "hoje_e_amanha": duas mensagens — reservas de hoje e, separada, as de amanhã
+    for m in (["hoje", "amanha"] if modo == "hoje_e_amanha" else [modo]):
+        try:
+            texto = await montar_tagme(m)
+        except Exception as e:
+            await tg_erro(context.bot, e)
+            if chat_destino:
+                await enviar(context.bot, chat_destino, f"Erro ao consultar a Tagme: {esc(e)}",
+                             message_thread_id=thread)
+            return
+        kb = botoes_tagme(m if m in ("hoje", "amanha") else "")
         if chat_destino:
-            await enviar(context.bot, chat_destino, f"Erro ao consultar a Tagme: {esc(e)}",
-                         message_thread_id=thread)
-        return
-    if chat_destino:
-        await enviar(context.bot, chat_destino, texto, message_thread_id=thread, reply_markup=botoes_tagme())
-    else:
-        await tg_enviar(context.bot, texto, reply_markup=botoes_tagme())
+            await enviar(context.bot, chat_destino, texto, message_thread_id=thread, reply_markup=kb)
+        else:
+            await tg_enviar(context.bot, texto, reply_markup=kb)
 
 
 async def botao_tagme(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2873,12 +2937,13 @@ async def botao_tagme(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await q.answer(f"Erro: {e}"[:190], show_alert=True)
         return
+    kb = botoes_tagme(modo if modo in ("hoje", "amanha") else "")
     try:
-        await q.edit_message_text(limpar_texto(texto), parse_mode=ParseMode.HTML, reply_markup=botoes_tagme(),
+        await q.edit_message_text(limpar_texto(texto), parse_mode=ParseMode.HTML, reply_markup=kb,
                                   disable_web_page_preview=True)
     except Exception as e:  # mensagem igual ou longa demais: manda nova
         if "not modified" not in str(e).lower():
-            await enviar(context.bot, q.message.chat.id, texto, reply_markup=botoes_tagme(),
+            await enviar(context.bot, q.message.chat.id, texto, reply_markup=kb,
                          message_thread_id=q.message.message_thread_id if q.message.is_topic_message else None)
 
 
@@ -2896,18 +2961,18 @@ async def cmd_fila(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_reservas(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/reservas (amanhã) · /reservas hoje|ontem|agora|25/12"""
+    """/reservas (hoje e amanhã) · /reservas hoje|amanha|ontem|agora|25/12"""
     if not TG:
         await update.message.reply_text("A Tagme ainda não está configurada (TAGME_EMAIL/TAGME_SENHA no .env).")
         return
-    modo = "amanha"
+    modo = "hoje_e_amanha"
     if context.args:
         a = normalizar(context.args[0]).lower()
         h = hoje()
         if a.startswith("amanh"):
             modo = "amanha"
         elif a.startswith("hoje"):
-            modo = h.isoformat()
+            modo = "hoje"
         elif a.startswith("ontem"):
             modo = (h - timedelta(days=1)).isoformat()
         elif a.startswith("agora"):
@@ -2948,7 +3013,7 @@ def _reenvios():
     r = {
         "lista": ("📋 Ocorrências em aberto (fotos do grupo)", oc_publicar_lista, "grupo da manutenção + seu privado"),
         "resumo": ("📊 Leankeep: o que ficou sem baixa ONTEM", resumo, "seu privado"),
-        "reservas": ("📅 Reservas da Tagme (amanhã)", resumo_tagme, "tópico Bot da Tagme"),
+        "reservas": ("📅 Reservas da Tagme (hoje e amanhã)", resumo_tagme, "tópico Bot da Tagme"),
         "relogio": ("⏰ Lembrete dos relógios", lembrete_relogio, "grupo de fechamento"),
         "semanal": ("📈 Resumo semanal", enviar_semanal, "seu privado"),
     }
