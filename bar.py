@@ -621,8 +621,22 @@ async def on_mensagem(update: Update, context) -> bool:
         "uid": msg.from_user.id if msg.from_user else 0, "quem": quem,
         "em": quando.isoformat(timespec="minutes"), "texto": texto[:300], "link": link_msg(msg), "lembrado": False}
     gravar(d)
-    botoes = [[InlineKeyboardButton(r.get("botao") or r["nome"][:30], callback_data=f"bc|{msg.message_id}|{r['id']}")]
-              for r in cands]
+    # opções: as rotinas do tópico e, depois, tudo o que está pendente no bar (de qualquer tópico),
+    # porque às vezes postam no tópico errado (ex.: reunião com a nutrição no tópico de treinamentos)
+    opcoes = list(cands)
+    for r in sorted(rotinas(), key=lambda x: x.get("nome_curto", x["nome"])):
+        if r in opcoes or r.get("tipo") == "diretor":
+            continue
+        pch, _, _ = periodo(r, quando_referencia(texto, quando))
+        if len(entregas(d, r["id"], pch)) < meta(r):
+            opcoes.append(r)
+    opcoes = opcoes[:int(cfg().get("max_opcoes_classificar", 16))]
+    bt = lambda r: InlineKeyboardButton(r.get("botao") or r.get("nome_curto") or r["nome"][:30],
+                                        callback_data=f"bc|{msg.message_id}|{r['id']}")
+    botoes = [[bt(r)] for r in opcoes if r in cands]          # do tópico: uma por linha, no topo
+    outras = [r for r in opcoes if r not in cands]             # demais pendências: duas por linha
+    botoes += [[bt(r) for r in outras[i:i + 2]] for i in range(0, len(outras), 2)]
+    botoes.append([InlineKeyboardButton("❌ Não é entrega", callback_data=f"bc|{msg.message_id}|-")])
     await B.enviar(context.bot, msg.chat.id, "📌 O que foi postado? Toque na opção certa:",
                    message_thread_id=msg.message_thread_id if msg.is_topic_message else None,
                    reply_to_message_id=msg.message_id, reply_markup=InlineKeyboardMarkup(botoes))
@@ -647,6 +661,15 @@ async def botao_classificar(update: Update, context):
     _, mid, rid = q.data.split("|", 2)
     d = dados()
     p = d["classificar"].get(mid)
+    if rid == "-":  # não era entrega: some a pergunta
+        d["classificar"].pop(mid, None)
+        gravar(d)
+        await q.answer("Ok, não conta como entrega.")
+        try:
+            await q.message.delete()
+        except Exception:
+            pass
+        return
     r = rot(rid)
     if not p or not r:
         await q.answer("Essa postagem já foi registrada.")
