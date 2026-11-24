@@ -136,7 +136,10 @@ lista_horario = "07:00"          # lista de pendências (tópico + privado do ge
 confirmar_registro = true        # robô responde "📌 Ocorrência #N registrada" com botão
 min_caracteres_texto = 15        # mensagem só de texto menor que isso não vira ocorrência
 juntar_segundos = 120            # foto + texto da mesma pessoa em até 2 min = 1 ocorrência
-palavras_resolvido = ["resolvido", "resolvida", "concluído", "concluída", "finalizado"]
+# Solução: mensagem com estas palavras (vale a raiz) ou com ✅ NÃO abre ocorrência; respondendo à foto
+# de uma ocorrência, conclui. Ex.: "Trocado ✅", "consertada", "resolvido".
+palavras_resolvido = ["resolvid", "concluid", "finalizad", "trocad", "consertad", "concertad", "arrumad", "reparad", "substituid", "instalad", "regulad"]
+emojis_resolvido = ["✅", "✔", "☑"]
 palavras_andamento = ["em andamento", "andamento", "verificando", "vou verificar", "estou vendo"]
 avisar_baixa_privado = true      # cada baixa chega no privado do gestor (foto, quem baixou, data) com botão Reativar
 apagar_ao_concluir = true        # concluída: apaga do grupo as mensagens do robô sobre ela (o backup fica no privado)

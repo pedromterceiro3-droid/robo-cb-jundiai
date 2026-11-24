@@ -871,10 +871,13 @@ def oc_nivel(texto: str) -> str | None:
 
 
 def eh_resolvido(texto: str) -> bool:
-    t = normalizar(texto)
+    """Mensagem de solução ("Trocado ✅", "resolvido", "consertado"). Vale o começo da palavra
+    ("conserta" pega consertado/consertada) e os emojis de check."""
+    if any(e in (texto or "") for e in oc_cfg().get("emojis_resolvido", ["✅", "✔", "☑"])):
+        return True
     palavras = oc_cfg().get("palavras_resolvido",
-                            ["RESOLVIDO", "RESOLVIDA", "CONCLUIDO", "CONCLUIDA", "FINALIZADO"])
-    return any(normalizar(p) in t for p in palavras)
+                            ["resolvid", "concluid", "finalizad", "trocad", "consertad", "arrumad", "reparad"])
+    return _tem_raiz(texto, palavras)
 
 
 def oc_coleta():
@@ -1060,6 +1063,14 @@ async def oc_baixa_privado(bot, num):
     L += ["", "<i>Baixa feita por engano? Toque em Reativar.</i>"]
     teclado = InlineKeyboardMarkup([[InlineKeyboardButton(f"↩️ Reativar #{num}", callback_data=f"ocr|{num}")]])
     await oc_enviar_com_foto(bot, int(g), None, o, "\n".join(L), teclado)
+    sol = o.get("solucao")
+    if sol and sol.get("foto"):
+        try:
+            await bot.copy_message(int(g), sol["chat_id"], sol["msg_id"],
+                                   caption=f"🛠️ Foto da solução – Ocorrência #{num}"
+                                           + (f" (postada por {sol['por']})" if sol.get("por") else ""))
+        except Exception as e:
+            log.info("Não consegui copiar a foto da solução da #%s: %s", num, e)
 
 
 async def oc_avisar_reativada(bot, num, quem):
@@ -1168,6 +1179,10 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 break
         if num and eh_resolvido(texto):
             if oc_resolver(dados, num, quem):
+                if msg.photo:
+                    dados["itens"][num]["solucao"] = {"chat_id": msg.chat.id, "msg_id": msg.message_id,
+                                                      "foto": True, "por": quem}
+                    gravar(ARQ_OCORR, dados)
                 await reagir(context.bot, msg, "👍")  # confirma sem poluir o grupo
                 await oc_concluida(context.bot, num)
         elif num and eh_andamento(texto):
@@ -1225,7 +1240,27 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         break  # só junta com a ocorrência mais recente dessa pessoa
 
-    if eh_resolvido(texto) and not tem_midia:
+    if eh_resolvido(texto):
+        # foto/texto mostrando a solução ("Trocado ✅") não abre ocorrência. Com foto e havendo
+        # ocorrências em aberto, o robô pergunta qual delas foi concluída.
+        if tem_midia and oc_cfg().get("perguntar_conclusao", True) and any(
+                not o.get("resolvida") for o in dados["itens"].values()):
+            chave_p = f"{msg.chat.id}:{msg.message_id}"
+            dados.setdefault("perguntas", {})[chave_p] = {
+                "chat_id": msg.chat.id, "topico": msg.message_thread_id if msg.is_topic_message else 0,
+                "msg_ids": [msg.message_id], "album": msg.media_group_id, "autor": quem, "autor_id": uid,
+                "texto": texto, "foto": bool(msg.photo), "criada": enviada.isoformat(timespec="minutes"),
+                "ultima_msg": enviada.isoformat(timespec="seconds"), "resolvida": None}
+            gravar(ARQ_OCORR, dados)
+            r = await enviar(context.bot, msg.chat.id,
+                             f"✅ {esc(quem.split()[0])}, qual ocorrência foi concluída?",
+                             message_thread_id=msg.message_thread_id if msg.is_topic_message else None,
+                             reply_to_message_id=msg.message_id, reply_markup=teclado_conclusao(chave_p))
+            if r is not None:
+                dados = oc_dados()
+                if chave_p in dados.get("perguntas", {}):
+                    dados["perguntas"][chave_p]["msg_pergunta"] = r.message_id
+                    gravar(ARQ_OCORR, dados)
         return
 
     # 4) palavra-chave. Palavra "forte" (quebrou, vazando…) abre direto; palavra "fraca"
@@ -1277,11 +1312,9 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
         dados.setdefault("perguntas", {})[chave_p] = item
         gravar(ARQ_OCORR, dados)
         r = await enviar(context.bot, msg.chat.id,
-                         f"🤔 {esc(quem.split()[0])}, isso é uma ocorrência de manutenção?",
+                         f"🤔 {esc(quem.split()[0])}, do que se trata esta postagem?",
                          message_thread_id=item["topico"] or None, reply_to_message_id=msg.message_id,
-                         reply_markup=InlineKeyboardMarkup([[
-                             InlineKeyboardButton("📌 Sim, abrir ocorrência", callback_data=f"ocq|s|{chave_p}"),
-                             InlineKeyboardButton("Não", callback_data=f"ocq|n|{chave_p}")]]))
+                         reply_markup=teclado_pergunta(chave_p))
         if r is not None:
             dados = oc_dados()
             if chave_p in dados.get("perguntas", {}):
@@ -1376,11 +1409,40 @@ async def oc_registrar(bot, dados: dict, item: dict) -> str:
     return num
 
 
+def teclado_pergunta(chave_p: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📌 Abrir ocorrência", callback_data=f"ocq|s|{chave_p}"),
+         InlineKeyboardButton("✅ Conclusão de ocorrência", callback_data=f"ocq|c|{chave_p}")],
+        [InlineKeyboardButton("Não é ocorrência", callback_data=f"ocq|n|{chave_p}")]])
+
+
+def teclado_conclusao(chave_p: str) -> InlineKeyboardMarkup:
+    """Lista as ocorrências em aberto (mais recentes primeiro) para escolher qual foi concluída."""
+    abertas = sorted([o for o in oc_dados()["itens"].values() if not o.get("resolvida")],
+                     key=lambda o: -o["num"])[:int(oc_cfg().get("max_opcoes_conclusao", 8))]
+    linhas = [[InlineKeyboardButton(f"#{o['num']} {(o.get('texto') or 'só foto')[:32]}",
+                                    callback_data=f"ocq|f|{chave_p}|{o['num']}")] for o in abertas]
+    linhas.append([InlineKeyboardButton("📌 É ocorrência nova", callback_data=f"ocq|s|{chave_p}"),
+                   InlineKeyboardButton("Nenhuma", callback_data=f"ocq|n|{chave_p}")])
+    return InlineKeyboardMarkup(linhas)
+
+
 async def oc_botao_pergunta(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Resposta ao "isso é uma ocorrência?" (palavras como verificar, avaliar, revisar)."""
+    """Resposta ao "do que se trata?" / "qual foi concluída?" (abrir, concluir ou não é nada)."""
     q = update.callback_query
-    _, resp, chave_p = q.data.split("|", 2)
+    partes = q.data.split("|")
+    resp, chave_p = partes[1], partes[2]
     dados = oc_dados()
+    if resp == "c":  # conclusão: mostra a lista de ocorrências em aberto
+        if chave_p not in dados.get("perguntas", {}):
+            await q.answer("Essa pergunta já foi respondida.")
+            return
+        await q.answer()
+        try:
+            await q.edit_message_text("✅ Qual ocorrência foi concluída?", reply_markup=teclado_conclusao(chave_p))
+        except Exception:
+            pass
+        return
     item = dados.get("perguntas", {}).pop(chave_p, None)
     if not item:
         await q.answer("Essa pergunta já foi respondida.")
@@ -1398,6 +1460,20 @@ async def oc_botao_pergunta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if resp == "s":
         num = await oc_registrar(context.bot, dados, item)
         await q.answer(f"Ocorrência #{num} aberta")
+    elif resp == "f":
+        num = partes[3]
+        o = oc_resolver(dados, num, q.from_user.full_name)
+        if not o:
+            await q.answer("Essa ocorrência já estava concluída.")
+            return
+        dados = oc_dados()
+        dados["itens"][num]["solucao"] = {"chat_id": item["chat_id"], "msg_id": item["msg_ids"][0],
+                                          "foto": item.get("foto"), "por": item.get("autor")}
+        gravar(ARQ_OCORR, dados)
+        from types import SimpleNamespace as _N
+        await reagir(context.bot, _N(chat=_N(id=item["chat_id"]), message_id=item["msg_ids"][0]), "👍")
+        await oc_concluida(context.bot, num)
+        await q.answer(f"Ocorrência #{num} concluída!")
     else:
         await q.answer("Ok, não virou ocorrência.")
 
