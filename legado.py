@@ -116,7 +116,7 @@ def valor_qs(id_: str, texto: str) -> str:
 
 
 class Legado:
-    def __init__(self, token: str, refresh: str | None = None):
+    def __init__(self, token: str, refresh: str | None = None, empresa_id: str = "3802"):
         self.http = httpx.Client(base_url=BASE, timeout=httpx.Timeout(60, connect=20), follow_redirects=True,
                                  headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                                                         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131 Safari/537.36",
@@ -125,6 +125,10 @@ class Legado:
             self.http.cookies.set("authToken", token, domain=dom, path="/")
             if refresh:
                 self.http.cookies.set("refreshToken", refresh, domain=dom, path="/")
+            # o site novo grava estes cookies para a parte antiga saber a empresa
+            self.http.cookies.set("companies", json.dumps({"id": int(empresa_id), "name": "Coco Bambu",
+                                                           "tipoNome": "Building"}, separators=(",", ":")),
+                                  domain=dom, path="/")
         self.html = ""
         self.action = ""
         self.campos: dict[str, str] = {}
@@ -137,7 +141,16 @@ class Legado:
         if r.status_code >= 400 or re.search(r"SignIn|/login|Reauth", final, re.I):
             raise RuntimeError(f"o Leankeep antigo não aceitou o acesso do robô (foi para {final[:80]}, {r.status_code})")
         if CAMPO["descricao"] not in r.text:
-            raise RuntimeError("abri a página, mas não achei o formulário de ocorrência")
+            titulo = re.search(r"<title>\s*(.*?)\s*</title>", r.text, re.S | re.I)
+            corpo = re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ", r.text, flags=re.S | re.I)
+            corpo = " ".join(unescape(corpo).split())
+            for marca in ("Continue de onde parou", "Acesso exclusivo", "identificar sua sess", "Senha", "Login"):
+                if marca.lower() in corpo.lower():
+                    corpo = corpo[max(0, corpo.lower().find(marca.lower()) - 60):]
+                    break
+            raise RuntimeError(f"abri a página, mas não achei o formulário de ocorrência. "
+                               f"Endereço: {final[:90]} | status {r.status_code} | título: "
+                               f"{(titulo.group(1) if titulo else '?')[:60]} | texto: {corpo[:220]}")
         self._atualizar(r.text, final)
         return self
 
@@ -185,9 +198,9 @@ class Legado:
         return _itens_seletor(self.http.get(u).text)
 
 
-def testar(token: str, refresh: str | None = None, max_grupos: int = 20) -> dict:
+def testar(token: str, refresh: str | None = None, max_grupos: int = 20, empresa_id: str = "3802") -> dict:
     """Só leitura: abre o formulário novo, lista os grupos e as áreas de cada grupo. NÃO salva."""
-    lg = Legado(token, refresh).abrir()
+    lg = Legado(token, refresh, empresa_id).abrir()
     res = {"unidade": lg.unidade(), "emitente": lg.campos.get(CAMPO["emitente"] + "$Text"),
            "prioridades": PRIORIDADES, "grupos": {}}
     for gid, nome in lg.grupos()[:max_grupos]:

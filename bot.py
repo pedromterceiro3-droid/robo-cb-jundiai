@@ -3168,12 +3168,13 @@ async def cmd_testar_leankeep(update: Update, context: ContextTypes.DEFAULT_TYPE
         if not LK.token:
             LK.login()
         try:
-            return legado.testar(LK.token, LK.refresh)
+            return legado.testar(LK.token, LK.refresh, empresa_id=LK.empresa_id)
         except RuntimeError as e:
-            if "não aceitou" not in str(e):
+            if "não aceitou" not in str(e) and "não achei o formulário" not in str(e):
                 raise
+            log.warning("Leankeep antigo, 1ª tentativa: %s", e)
             LK.renovar()  # token velho: renova e tenta de novo
-            return legado.testar(LK.token, LK.refresh)
+            return legado.testar(LK.token, LK.refresh, empresa_id=LK.empresa_id)
 
     try:
         res = await asyncio.wait_for(asyncio.to_thread(rodar), 240)
