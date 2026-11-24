@@ -3149,6 +3149,54 @@ def _reenvios():
     return r
 
 
+ARQ_LK_AREAS = DADOS / "leankeep_areas.json"
+
+
+async def cmd_testar_leankeep(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/testar_leankeep – TESTE só de leitura da parte antiga do Leankeep: abre o formulário de
+    ocorrência nova, lista grupos e áreas da unidade. Não salva nada no Leankeep."""
+    if not _eh_gestor(update):
+        await update.effective_message.reply_text("Só o gestor pode usar /testar_leankeep.")
+        return
+    if MODO != "leankeep" or not LK:
+        await update.effective_message.reply_text("O robô está sem acesso ao Leankeep.")
+        return
+    await update.effective_message.reply_text("🔎 Abrindo o formulário de ocorrência no Leankeep (só leitura, não salva nada)…")
+    import legado
+
+    def rodar():
+        if not LK.token:
+            LK.login()
+        try:
+            return legado.testar(LK.token, LK.refresh)
+        except RuntimeError as e:
+            if "não aceitou" not in str(e):
+                raise
+            LK.renovar()  # token velho: renova e tenta de novo
+            return legado.testar(LK.token, LK.refresh)
+
+    try:
+        res = await asyncio.wait_for(asyncio.to_thread(rodar), 240)
+    except Exception as e:
+        log.exception("Teste do Leankeep antigo falhou")
+        await enviar(context.bot, update.effective_chat.id, f"⚠️ Teste do Leankeep antigo falhou: {esc(str(e)[:400])}")
+        return
+    gravar(ARQ_LK_AREAS, {"em": datetime.now(FUSO).isoformat(timespec="minutes"), **res})
+    un = res.get("unidade") or ("?", "?")
+    L = ["✅ <b>Consegui abrir o formulário de ocorrência do Leankeep</b> (nada foi salvo)", "",
+         f"Unidade: <b>{esc(un[1])}</b> (código {esc(un[0])})",
+         f"Solicitante que viria preenchido: <b>{esc(res.get('emitente') or '?')}</b>",
+         f"Prioridades: {', '.join(res['prioridades'])}", "", "<b>Grupos de áreas e áreas</b>"]
+    for chave, areas in res["grupos"].items():
+        nome = chave.split("|", 1)[1]
+        if isinstance(areas, str):
+            L.append(f"• {esc(nome)}: {esc(areas[:120])}")
+        else:
+            nomes = ", ".join(a[1].split("/")[0].title() for a in areas[:12])
+            L.append(f"• <b>{esc(nome)}</b> ({len(areas)}): {esc(nomes)}" + (" …" if len(areas) > 12 else ""))
+    await enviar(context.bot, update.effective_chat.id, "\n".join(L))
+
+
 async def cmd_apagar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Responda (marque) uma mensagem com /apagar.
     • Mensagem do robô: é apagada do grupo.
@@ -3824,6 +3872,7 @@ def montar_app(token: str) -> Application:
     app.add_handler(CallbackQueryHandler(botao_baixa, pattern=r"^bx\|"))
     app.add_handler(CommandHandler("reativar", cmd_reativar))
     app.add_handler(CommandHandler("apagar", cmd_apagar))
+    app.add_handler(CommandHandler("testar_leankeep", cmd_testar_leankeep))
     app.add_handler(CallbackQueryHandler(botao_reativar, pattern=r"^ocr\|"))
     app.add_handler(CommandHandler("cancelar", cmd_cancelar))
     app.add_handler(CallbackQueryHandler(botao_alerta, pattern=r"^al\|"))

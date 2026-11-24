@@ -13,7 +13,7 @@ import cofre
 PASTA = Path(__file__).parent
 SAIDA = PASTA / "para_github"
 ENV = PASTA / ".env"
-ARQUIVOS = ["bot.py", "leankeep.py", "tagme.py", "config.toml", "requirements.txt",
+ARQUIVOS = ["bot.py", "bar.py", "legado.py", "leankeep.py", "tagme.py", "config.toml", "requirements.txt",
             "rodada.py", "cofre.py", "exportar.py"]
 
 if not ENV.exists():
