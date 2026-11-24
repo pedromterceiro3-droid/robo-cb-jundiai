@@ -129,6 +129,7 @@ class Legado:
             self.http.cookies.set("companies", json.dumps({"id": int(empresa_id), "name": "Coco Bambu",
                                                            "tipoNome": "Building"}, separators=(",", ":")),
                                   domain=dom, path="/")
+        self.pre = "ctl01"
         self.html = ""
         self.action = ""
         self.campos: dict[str, str] = {}
@@ -140,7 +141,10 @@ class Legado:
         final = str(r.url)
         if r.status_code >= 400 or re.search(r"SignIn|/login|Reauth", final, re.I):
             raise RuntimeError(f"o Leankeep antigo não aceitou o acesso do robô (foi para {final[:80]}, {r.status_code})")
-        if CAMPO["descricao"] not in r.text:
+        m = re.search(r'(ctl0\d)[$_]PageContent[$_]TabContainer[$_]TabPanelAnomalia[$_]Descricao', r.text)
+        if m:  # a página aberta direto (fora da janelinha) usa ctl00 em vez de ctl01
+            self.pre = m.group(1)
+        if not m:
             titulo = re.search(r"<title>\s*(.*?)\s*</title>", r.text, re.S | re.I)
             corpo = re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ", r.text, flags=re.S | re.I)
             corpo = " ".join(unescape(corpo).split())
@@ -153,6 +157,10 @@ class Legado:
                                f"{(titulo.group(1) if titulo else '?')[:60]} | texto: {corpo[:220]}")
         self._atualizar(r.text, final)
         return self
+
+    def c(self, chave: str) -> str:
+        """Nome do campo no formulário (com o prefixo ctl00/ctl01 que a página usou)."""
+        return CAMPO[chave].replace("ctl01", self.pre, 1)
 
     def _atualizar(self, html: str, url_atual: str):
         self.html = html
@@ -176,7 +184,7 @@ class Legado:
     # ---------- listas ----------
     def unidade(self) -> tuple[str, str] | None:
         try:
-            v = json.loads(self.campos.get(CAMPO["site"] + "$Value", "{}"))["List"][0]
+            v = json.loads(self.campos.get(self.c("site") + "$Value", "{}"))["List"][0]
             return v["Value"], v["Text"]
         except Exception:
             return None
@@ -188,8 +196,8 @@ class Legado:
         return _itens_seletor(self.http.get(u).text)
 
     def escolher_grupo(self, gid: str, nome: str):
-        self._postback(CAMPO["grupo"], {CAMPO["grupo"] + "$Value": valor_qs(gid, nome),
-                                        CAMPO["grupo"] + "$Text": nome})
+        g = self.c("grupo")
+        self._postback(g, {g + "$Value": valor_qs(gid, nome), g + "$Text": nome})
 
     def areas(self) -> list[tuple[str, str]]:
         u = _seletor_url(self.html, "Areas")
@@ -201,7 +209,7 @@ class Legado:
 def testar(token: str, refresh: str | None = None, max_grupos: int = 20, empresa_id: str = "3802") -> dict:
     """Só leitura: abre o formulário novo, lista os grupos e as áreas de cada grupo. NÃO salva."""
     lg = Legado(token, refresh, empresa_id).abrir()
-    res = {"unidade": lg.unidade(), "emitente": lg.campos.get(CAMPO["emitente"] + "$Text"),
+    res = {"unidade": lg.unidade(), "emitente": lg.campos.get(lg.c("emitente") + "$Text"), "prefixo": lg.pre,
            "prioridades": PRIORIDADES, "grupos": {}}
     for gid, nome in lg.grupos()[:max_grupos]:
         try:
