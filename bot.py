@@ -870,11 +870,85 @@ def oc_nivel(texto: str) -> str | None:
     return None
 
 
+RESOLVIDO_FORTE_PADRAO = ["resolvid", "conclu", "finaliz", "soluciona", "corrigid", "corrigi ", "consertad",
+                          "consertei", "concertad", "arrumad", "arrumei", "reparad", "sanad", "normalizad"]
+RESOLVIDO_FRACO_PADRAO = ["ok", "okay", "feito", "feita", "pronto", "pronta", "trocad", "troquei",
+                          "substituid", "liberad", "funcionando", "certinho", "tudo certo", "beleza", "blz"]
+EMOJIS_RESOLVIDO = ["✅", "✔", "☑", "👍", "👌", "🆗", "💯"]
+NEGACOES = [" NAO ", " AINDA ", " FALTA", " SEM SOLUC", " NEM ", " NUNCA "]
+
+
+def nivel_resolvido(texto: str) -> str | None:
+    """'forte' (resolvido, concluído, consertado…), 'fraco' (ok, 👍, feito, pronto…) ou None.
+    Frases negativas ("ainda não resolveu") e de andamento ("vou verificar") não contam."""
+    bruto = texto or ""
+    t = " " + " ".join(re.sub(r"[^A-Z0-9 ]", " ", normalizar(bruto)).split()) + " "
+    if any(n in t for n in NEGACOES) or (t.strip() and eh_andamento(bruto)):
+        return None
+    cfg = oc_cfg()
+    fortes = cfg.get("palavras_resolvido_fortes", RESOLVIDO_FORTE_PADRAO) + cfg.get("palavras_resolvido", [])
+    fracas = cfg.get("palavras_resolvido_fracas", RESOLVIDO_FRACO_PADRAO)
+
+    def tem(lst):
+        for w in lst:
+            w = " ".join(re.sub(r"[^A-Z0-9 ]", " ", normalizar(w)).split())
+            if not w:
+                continue
+            if len(w) <= 3 and f" {w} " in t:   # "ok" só como palavra inteira
+                return True
+            if len(w) > 3 and f" {w}" in t:     # raiz: "conclu" pega concluído, concluída…
+                return True
+        return False
+
+    if tem(fortes):
+        return "forte"
+    if any(e in bruto for e in EMOJIS_RESOLVIDO) or tem(fracas):
+        # "ok" junto com palavra de problema ("quebrou de novo, ok?") não é baixa
+        cfg_ab = cfg.get("palavras_abrem", PALAVRAS_ABREM_PADRAO)
+        if _tem_raiz(bruto, [w for w in cfg_ab if normalizar(w) not in ("OCORRENCIA", "MANUTENCAO")]):
+            return None
+        return "fraco"
+    return None
+
+
 def eh_resolvido(texto: str) -> bool:
-    t = normalizar(texto)
-    palavras = oc_cfg().get("palavras_resolvido",
-                            ["RESOLVIDO", "RESOLVIDA", "CONCLUIDO", "CONCLUIDA", "FINALIZADO"])
-    return any(normalizar(p) in t for p in palavras)
+    return nivel_resolvido(texto) is not None
+
+
+# palavras que não ajudam a achar a ocorrência ("a torneira do banheiro foi consertada" -> TORNE, BANHE)
+_IGNORAR = set("""A O AS OS UM UMA DE DA DO DAS DOS E EM NA NO NAS NOS PARA PRA POR COM QUE FOI JA JÁ ESTA ESTA
+TA TÁ ESSA ESSE ISSO AQUI LA LÁ AI SE SEU SUA MAIS BEM HOJE AGORA GENTE PESSOAL SR SRA OBRIGADO OBRIGADA VALEU
+OCORRENCIA OCORRENCIAS MANUTENCAO FOTO SEGUE TUDO CERTO OK OKAY FEITO FEITA PRONTO PRONTA BELEZA BLZ""".split())
+
+
+def _raizes(texto: str) -> set[str]:
+    palavras = re.sub(r"[^A-Z0-9 ]", " ", normalizar(texto)).split()
+    saida = set()
+    fortes = [normalizar(w) for w in RESOLVIDO_FORTE_PADRAO + RESOLVIDO_FRACO_PADRAO]
+    for w in palavras:
+        if len(w) < 3 or w in _IGNORAR or w.isdigit() or any(w.startswith(f.strip()) for f in fortes if len(f) > 3):
+            continue
+        saida.add(w[:5])
+    return saida
+
+
+def oc_numero_citado(texto: str) -> str | None:
+    """'#12', 'ocorrência 12', 'oc 12' -> '12'."""
+    m = re.search(r"#\s*(\d+)", texto or "") or re.search(r"(?i)\boc\w*\s*(?:n[ºo°.]?\s*)?(\d+)\b", normalizar(texto or ""))
+    return m.group(1) if m else None
+
+
+def oc_candidatas_baixa(dados: dict, texto: str, uid=None) -> list[tuple[int, dict]]:
+    """Ocorrências abertas ordenadas pela chance de serem a que foi resolvida: (pontos, ocorrência)."""
+    r = _raizes(texto)
+    saida = []
+    for o in dados["itens"].values():
+        if o.get("resolvida"):
+            continue
+        pts = len(r & _raizes(o.get("texto", "")))
+        saida.append((pts, o))
+    saida.sort(key=lambda x: (-x[0], -x[1]["num"]))
+    return saida
 
 
 def oc_coleta():
@@ -963,7 +1037,7 @@ def oc_lembrar_msg(num, enviada):
             gravar(ARQ_OCORR, dados)
 
 
-async def oc_limpar_grupo(bot, num, extra=None):
+async def oc_limpar_grupo(bot, num, extra=None, aviso_falha=None):
     """Concluída: apaga do grupo as mensagens do robô sobre ela (registro, cartões, avisos)."""
     dados = oc_dados()
     o = dados["itens"].get(str(num))
@@ -987,7 +1061,7 @@ async def oc_limpar_grupo(bot, num, extra=None):
             await bot.delete_message(chat, mid)
         except Exception as e:  # sem permissão de apagar: pelo menos tira os botões
             log.info("Não consegui apagar a mensagem %s da ocorrência #%s: %s", mid, num, e)
-            aviso = f"✅ Ocorrência #{num} concluída"
+            aviso = aviso_falha or f"✅ Ocorrência #{num} concluída"
             try:
                 await bot.edit_message_caption(chat, mid, caption=aviso, reply_markup=None)
             except Exception:
@@ -1144,6 +1218,155 @@ def botao_oc(num, o: dict | None = None) -> InlineKeyboardMarkup | None:
     return InlineKeyboardMarkup([linha])
 
 
+def botao_oc_gestor(num, o: dict | None = None) -> InlineKeyboardMarkup:
+    """Cartão no privado do gestor: os botões normais + 🗑️ Apagar (mediador)."""
+    base = botao_oc(num, o)
+    linhas = [list(l) for l in base.inline_keyboard] if base else []
+    linhas.append([InlineKeyboardButton("🗑️ Apagar (registrada errado)", callback_data=f"ocd|p|{num}")])
+    return InlineKeyboardMarkup(linhas)
+
+
+# ---------------- mediador: apagar ocorrência registrada errado ----------------
+def pode_mediar(uid) -> bool:
+    g = CFG.get("gestor_chat_id")
+    meds = [int(x) for x in oc_cfg().get("mediadores", [])]
+    return uid is not None and ((g and int(uid) == int(g)) or int(uid) in meds)
+
+
+async def oc_apagar(bot, num: str, quem: str) -> dict | None:
+    """Tira a ocorrência das pendências e apaga do grupo as mensagens do robô sobre ela.
+    Fica guardada em 'apagadas' (dá para desfazer)."""
+    dados = oc_dados()
+    o = dados["itens"].get(str(num))
+    if not o:
+        return None
+    await oc_limpar_grupo(bot, num, aviso_falha=f"🗑️ Ocorrência #{num} apagada")
+    dados = oc_dados()
+    o = dados["itens"].pop(str(num))
+    o["apagada"] = {"por": quem, "em": datetime.now(FUSO).isoformat(timespec="minutes")}
+    dados.setdefault("apagadas", {})[str(num)] = o
+    if oc_cfg().get("apagar_foto_original", False):  # precisa o robô ser admin do grupo
+        for mid in o.get("msg_ids", []):
+            try:
+                await bot.delete_message(o["chat_id"], mid)
+            except Exception as e:
+                log.info("Não consegui apagar a foto original %s: %s", mid, e)
+    gravar(ARQ_OCORR, dados)
+    return o
+
+
+def oc_restaurar(num: str) -> dict | None:
+    dados = oc_dados()
+    o = dados.get("apagadas", {}).pop(str(num), None)
+    if not o:
+        return None
+    o.pop("apagada", None)
+    dados["itens"][str(num)] = o
+    gravar(ARQ_OCORR, dados)
+    return o
+
+
+def _resumo_oc(o: dict) -> str:
+    return esc(legivel(o.get("texto") or "(só foto)")[:120])
+
+
+def oc_da_mensagem(chat_id, mid) -> str | None:
+    for n, o in oc_dados()["itens"].items():
+        if mid in o["msg_ids"] or mid == o.get("msg_robo") or [chat_id, mid] in o.get("robo_msgs", []):
+            return n
+    return None
+
+
+async def cmd_excluir(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/excluir 12 (ou 12 15 18) — ou responda à foto/mensagem da ocorrência com /excluir (ou /apagar)."""
+    msg = update.effective_message
+    u = update.effective_user
+    if not pode_mediar(u.id if u else None):
+        await msg.reply_text("Só o gestor pode apagar ocorrências.")
+        return
+    nums = [a.lstrip("#") for a in context.args if a.lstrip("#").isdigit()]
+    if not nums and msg.reply_to_message:
+        n = oc_da_mensagem(msg.chat.id, msg.reply_to_message.message_id)
+        nums = [n] if n else []
+    if not nums:
+        await msg.reply_text("Use assim: /excluir 12  (ou responda à foto da ocorrência com /excluir)")
+        return
+    feitas = []
+    for n in nums:
+        o = await oc_apagar(context.bot, n, u.full_name)
+        if o:
+            feitas.append((n, o))
+    if msg.chat.id < 0:  # no grupo: some com o comando também, para não poluir
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+    g = CFG.get("gestor_chat_id") or u.id
+    if not feitas:
+        await enviar(context.bot, int(g), f"Nenhuma ocorrência aberta com o número {', '.join('#' + n for n in nums)}.")
+        return
+    for n, o in feitas:
+        await enviar(context.bot, int(g), f"🗑️ <b>Ocorrência #{n} apagada</b>\n<i>{_resumo_oc(o)}</i>",
+                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                         f"↩️ Desfazer (restaurar #{n})", callback_data=f"ocd|u|{n}")]]))
+
+
+async def oc_botao_apagar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ocd|p|N = pedir confirmação · ocd|s|N = apagar · ocd|n|N = cancelar · ocd|u|N = desfazer."""
+    q = update.callback_query
+    _, acao, num = q.data.split("|", 2)
+    if not pode_mediar(q.from_user.id):
+        await q.answer("Só o gestor pode apagar ocorrências.", show_alert=True)
+        return
+    dados = oc_dados()
+    o = dados["itens"].get(num)
+    if acao == "p":
+        if not o:
+            await q.answer("Essa ocorrência não existe mais.")
+            return
+        await q.answer()
+        await q.edit_message_reply_markup(InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"🗑️ Sim, apagar #{num}", callback_data=f"ocd|s|{num}"),
+            InlineKeyboardButton("Cancelar", callback_data=f"ocd|n|{num}")]]))
+    elif acao == "n":
+        await q.answer("Cancelado")
+        try:
+            await q.edit_message_reply_markup(botao_oc_gestor(num, o) if o else None)
+        except Exception:
+            pass
+    elif acao == "s":
+        o = await oc_apagar(context.bot, num, q.from_user.full_name)
+        if not o:
+            await q.answer("Essa ocorrência não existe mais.")
+            return
+        await q.answer(f"#{num} apagada")
+        aviso = f"🗑️ <b>Ocorrência #{num} apagada</b>\n<i>{_resumo_oc(o)}</i>"
+        teclado = InlineKeyboardMarkup([[InlineKeyboardButton(f"↩️ Desfazer (restaurar #{num})",
+                                                              callback_data=f"ocd|u|{num}")]])
+        try:
+            if q.message.photo:
+                await q.edit_message_caption(caption=aviso, parse_mode=ParseMode.HTML, reply_markup=teclado)
+            else:
+                await q.edit_message_text(aviso, parse_mode=ParseMode.HTML, reply_markup=teclado)
+        except Exception:
+            await enviar(context.bot, q.message.chat.id, aviso, reply_markup=teclado)
+    elif acao == "u":
+        o = oc_restaurar(num)
+        if not o:
+            await q.answer("Não achei essa ocorrência para restaurar.")
+            return
+        await q.answer(f"#{num} restaurada")
+        txt = f"↩️ <b>Ocorrência #{num} restaurada</b> – volta para a lista de pendências.\n<i>{_resumo_oc(o)}</i>"
+        try:
+            if q.message.photo:
+                await q.edit_message_caption(caption=txt, parse_mode=ParseMode.HTML,
+                                             reply_markup=botao_oc_gestor(num, o))
+            else:
+                await q.edit_message_text(txt, parse_mode=ParseMode.HTML, reply_markup=botao_oc_gestor(num, o))
+        except Exception:
+            pass
+
+
 def eh_andamento(texto: str) -> bool:
     t = normalizar(texto)
     return any(normalizar(p) in t for p in oc_cfg().get(
@@ -1163,9 +1386,13 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if alvo and alvo.message_id != msg.message_thread_id:
         num = None
         for n, o in dados["itens"].items():
-            if alvo.message_id in o["msg_ids"] or alvo.message_id == o.get("msg_robo"):
+            if alvo.message_id in o["msg_ids"] or alvo.message_id == o.get("msg_robo") \
+                    or [msg.chat.id, alvo.message_id] in o.get("robo_msgs", []):
                 num = n
                 break
+        if not num and eh_resolvido(texto):  # respondeu algo que não é a foto (lista, outra msg…)
+            await oc_baixa_inteligente(context.bot, dados, msg, texto, quem)
+            return
         if num and eh_resolvido(texto):
             if oc_resolver(dados, num, quem):
                 await reagir(context.bot, msg, "👍")  # confirma sem poluir o grupo
@@ -1189,6 +1416,10 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 and not (alvo.from_user and alvo.from_user.is_bot):
             await oc_abrir_por_resposta(context.bot, dados, msg, alvo, quem)
         return  # outras respostas são só conversa sobre a ocorrência
+    # mensagem solta dizendo que resolveu: nunca abre ocorrência nova; o robô procura qual foi
+    if eh_resolvido(texto):
+        await oc_baixa_inteligente(context.bot, dados, msg, texto, quem)
+        return
     if no_topico_saida(msg):
         return  # no tópico Keepbot só valem respostas às mensagens do robô
 
@@ -1224,9 +1455,6 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
             gravar(ARQ_OCORR, dados)
             return
         break  # só junta com a ocorrência mais recente dessa pessoa
-
-    if eh_resolvido(texto) and not tem_midia:
-        return
 
     # 4) palavra-chave. Palavra "forte" (quebrou, vazando…) abre direto; palavra "fraca"
     #    (verificar, avaliar…) faz o robô perguntar com botão; sem palavra, não vira ocorrência.
@@ -1290,6 +1518,93 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await oc_registrar(context.bot, dados, item)
+
+
+async def oc_baixa_inteligente(bot, dados: dict, msg, texto: str, quem: str):
+    """Alguém escreveu "resolvido/ok/✅…" sem marcar a foto: descobre qual ocorrência foi.
+    - número citado (#12) ou só uma ocorrência combinando com o texto -> conclui direto;
+    - dúvida -> pergunta com botões (só quando a palavra é forte ou há foto; "ok" solto é ignorado)."""
+    uid = msg.from_user.id if msg.from_user else None
+    nivel = nivel_resolvido(texto)
+    tem_midia = bool(msg.photo or msg.video or msg.document)
+    # foto mandada pouco antes pela mesma pessoa (ex.: foto do conserto) não vira candidata a ocorrência
+    chave_c = f"{msg.chat.id}:{uid}"
+    if chave_c in dados.get("candidatas", {}):
+        dados["candidatas"].pop(chave_c)
+        gravar(ARQ_OCORR, dados)
+    num = oc_numero_citado(texto)
+    if num and num in dados["itens"] and not dados["itens"][num].get("resolvida"):
+        return await _oc_concluir_por_texto(bot, dados, msg, num, quem)
+    cands = oc_candidatas_baixa(dados, texto, uid)
+    if not cands:
+        return
+    melhor = cands[0][0]
+    segundo = cands[1][0] if len(cands) > 1 else 0
+    if melhor >= 1 and melhor > segundo:
+        return await _oc_concluir_por_texto(bot, dados, msg, str(cands[0][1]["num"]), quem)
+    if len(cands) == 1 and (nivel == "forte" or tem_midia):
+        return await _oc_concluir_por_texto(bot, dados, msg, str(cands[0][1]["num"]), quem)
+    if nivel != "forte" and not tem_midia and melhor == 0:
+        return  # "ok", "👍" solto no meio da conversa: não incomoda ninguém
+    opcoes = [o for pts, o in cands if pts == melhor][:6] if melhor >= 1 else [o for _, o in cands][:6]
+    linhas = [[InlineKeyboardButton(f"#{o['num']} – {legivel(o.get('texto') or 'foto')[:40]}",
+                                    callback_data=f"ocx|{o['num']}|{msg.message_id}")] for o in opcoes]
+    linhas.append([InlineKeyboardButton("Nenhuma destas", callback_data=f"ocx|0|{msg.message_id}")])
+    r = await enviar(bot, msg.chat.id, f"✅ {esc(quem.split()[0])}, qual ocorrência foi resolvida?",
+                     message_thread_id=msg.message_thread_id if msg.is_topic_message else None,
+                     reply_to_message_id=msg.message_id, reply_markup=InlineKeyboardMarkup(linhas))
+    if r is not None:
+        oc_lembrar_msg(str(opcoes[0]["num"]), _Enviada(r.chat.id, r.message_id))
+
+
+async def _oc_concluir_por_texto(bot, dados, msg, num: str, quem: str):
+    if not oc_resolver(dados, num, quem):
+        return
+    await reagir(bot, msg, "👍")
+    o = dados["itens"][num]
+    r = await oc_avisar(bot, msg, f"✅ Ocorrência <b>#{num}</b> concluída por {esc(quem)}\n"
+                                  f"<i>{esc(legivel(o.get('texto') or 'foto')[:120])}</i>",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                            "↩️ Não era essa", callback_data=f"ocx|d{num}|{msg.message_id}")]]))
+    await oc_concluida(bot, num)
+
+
+async def oc_botao_baixa(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Botões do "qual ocorrência foi resolvida?" e do "Não era essa"."""
+    q = update.callback_query
+    _, escolha, _msg = q.data.split("|", 2)
+    quem = q.from_user.full_name
+    dados = oc_dados()
+    if escolha == "0":
+        await q.answer("Ok, nada alterado.")
+        try:
+            await q.message.delete()
+        except Exception:
+            pass
+        return
+    if escolha.startswith("d"):  # desfazer: reabre a ocorrência
+        num = escolha[1:]
+        o = oc_reativar(dados, num, quem)
+        await q.answer(f"#{num} reaberta" if o else "Não consegui reabrir.")
+        try:
+            await q.edit_message_text(f"↩️ Ocorrência #{num} reaberta por {esc(quem)}. "
+                                      f"Marque a foto certa respondendo \"resolvido\".",
+                                      parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+        if o:
+            await oc_avisar_reativada(context.bot, num, quem)
+        return
+    o = oc_resolver(dados, escolha, quem)
+    if not o:
+        await q.answer("Essa ocorrência já estava concluída.")
+        return
+    await q.answer(f"#{escolha} concluída!")
+    try:
+        await q.message.delete()
+    except Exception:
+        pass
+    await oc_concluida(context.bot, escolha)
 
 
 def pede_abrir(texto: str) -> bool:
@@ -1373,6 +1688,16 @@ async def oc_registrar(bot, dados: dict, item: dict) -> str:
         dados = oc_dados()
         dados["itens"][num]["msg_robo"] = r.message_id
         gravar(ARQ_OCORR, dados)
+    g = CFG.get("gestor_chat_id")
+    if g and oc_cfg().get("avisar_nova_privado", True) and not TESTE.get():
+        try:
+            await oc_enviar_com_foto(bot, int(g), None, item,
+                                     f"🆕 <b>Nova ocorrência #{num}</b>\n\n{_resumo_oc(item)}\n"
+                                     f"<i>{esc(quem)} · <a href=\"{oc_link(item)}\">ver no grupo</a></i>\n\n"
+                                     f"<i>Registrada errado? Toque em 🗑️ Apagar.</i>",
+                                     botao_oc_gestor(num, item))
+        except Exception:
+            log.exception("Não consegui avisar o gestor da ocorrência nova")
     return num
 
 
@@ -1547,7 +1872,9 @@ async def oc_enviar_lista(bot, chat, thread=None):
         cab += "\n\n<i>Cada ocorrência vem a seguir, com os botões logo abaixo.</i>"
     await enviar(bot, chat, cab, message_thread_id=thread)
     for o in abertas[:40]:
-        r = await oc_enviar_com_foto(bot, chat, thread, o, oc_cartao(o), botao_oc(o["num"], o))
+        priv = CFG.get("gestor_chat_id") and str(chat) == str(CFG["gestor_chat_id"])
+        r = await oc_enviar_com_foto(bot, chat, thread, o, oc_cartao(o),
+                                     botao_oc_gestor(o["num"], o) if priv else botao_oc(o["num"], o))
         oc_lembrar_msg(o["num"], r)
     if len(abertas) > 40:
         await enviar(bot, chat, f"… e mais {len(abertas) - 40} ocorrências. Use /pendencias para ver.",
@@ -1599,21 +1926,6 @@ async def cmd_pendencias(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     await oc_enviar_lista(context.bot, update.effective_chat.id,
                           msg.message_thread_id if msg.is_topic_message else None)
-
-
-async def cmd_excluir(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if CFG.get("gestor_chat_id") and update.effective_user.id != int(CFG["gestor_chat_id"]):
-        await update.message.reply_text("Só o gestor pode excluir ocorrências.")
-        return
-    if not context.args:
-        await update.message.reply_text("Use assim: /excluir 12  (apaga a ocorrência da lista)")
-        return
-    dados = oc_dados()
-    apagadas = [a.lstrip("#") for a in context.args if dados["itens"].pop(a.lstrip("#"), None)]
-    gravar(ARQ_OCORR, dados)
-    await update.message.reply_text(
-        f"🗑️ Excluída(s): {', '.join('#' + n for n in apagadas)}" if apagadas
-        else "Não encontrei ocorrência com esse número.")
 
 
 async def cmd_resolver(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3063,6 +3375,9 @@ async def cmd_apagar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not alvo or (msg.is_topic_message and alvo.message_id == msg.message_thread_id):
         await msg.reply_text("Responda (marque) a mensagem que quer apagar e escreva /apagar.")
         return
+    if oc_da_mensagem(msg.chat.id, alvo.message_id):  # marcou uma ocorrência: apaga a ocorrência
+        context.args = []
+        return await cmd_excluir(update, context)
     chat = msg.chat.id
     desfeitas = BAR.desfazer(chat, alvo.message_id)
     apagou, erro = False, ""
@@ -3176,7 +3491,7 @@ COMANDOS_TXT = (
     "• /pendencias – lista de ocorrências em aberto\n"
     "• /resolver N – conclui a ocorrência N\n"
     "• /reativar N – reabre uma ocorrência baixada por engano\n"
-    "• /excluir N – apaga a ocorrência N\n"
+    "• /excluir N – apaga uma ocorrência registrada errado (ou responda à foto com /excluir); dá para desfazer\n"
     "• /semana – resumo da semana passada (/semana atual = semana corrente)\n"
     "• /fila – fila de espera da Tagme agora\n"
     "• /reservas – reservas de amanhã (/reservas hoje, /reservas 25/12)\n"
@@ -3720,6 +4035,8 @@ def montar_app(token: str) -> Application:
     app.add_handler(CommandHandler("testar_lembrete", cmd_testar_lembrete))
     app.add_handler(CallbackQueryHandler(oc_botao, pattern=r"^oca?\|"))
     app.add_handler(CallbackQueryHandler(oc_botao_pergunta, pattern=r"^ocq\|"))
+    app.add_handler(CallbackQueryHandler(oc_botao_baixa, pattern=r"^ocx\|"))
+    app.add_handler(CallbackQueryHandler(oc_botao_apagar, pattern=r"^ocd\|"))
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & ~filters.COMMAND, mensagem_grupo))
     app.add_handler(CommandHandler("alerta", cmd_alerta))
     app.add_handler(CommandHandler("conferir", cmd_conferir))

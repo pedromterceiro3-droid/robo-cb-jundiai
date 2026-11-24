@@ -130,9 +130,22 @@ confirmar_registro = true        # robô responde "📌 Ocorrência #N registrad
 min_caracteres_texto = 15        # mensagem só de texto menor que isso não vira ocorrência
 juntar_segundos = 120            # foto + texto da mesma pessoa em até 2 min = 1 ocorrência
 palavras_resolvido = ["resolvido", "resolvida", "concluído", "concluída", "finalizado"]
+# Baixa "inteligente": além das palavras acima, o robô entende como resolvido
+#   fortes: resolvido, concluído, finalizado, solucionado, corrigido, consertado, arrumado, reparado…
+#   fracas: ok, ✅, 👍, 👌, feito, pronto, trocado, funcionando, tudo certo…
+#   ("não", "ainda", "falta" e frases de andamento cancelam; "ok" junto com "quebrou/vazando" também)
+# Respondendo a foto -> conclui aquela. Sem marcar a foto -> o robô acha pelo número (#12) ou
+# pelas palavras do texto ("torneira consertada" -> ocorrência da torneira); na dúvida, pergunta com botões.
+# Mensagem de resolvido NUNCA abre ocorrência nova.
 palavras_andamento = ["em andamento", "andamento", "verificando", "vou verificar", "estou vendo"]
 avisar_baixa_privado = true      # cada baixa chega no privado do gestor (foto, quem baixou, data) com botão Reativar
 apagar_ao_concluir = true        # concluída: apaga do grupo as mensagens do robô sobre ela (o backup fica no privado)
+# MEDIADOR: apagar ocorrência registrada errado
+#   - cada ocorrência nova chega no seu privado com o botão 🗑️ Apagar (pede confirmação e tem Desfazer)
+#   - ou /excluir 12  (vários: /excluir 12 15)  ou responda à foto no grupo com /excluir (ou /apagar)
+avisar_nova_privado = true       # false = não manda cada ocorrência nova no privado (o /apagar continua valendo)
+apagar_foto_original = false     # true = apaga também a foto/mensagem da equipe (o robô precisa ser admin)
+mediadores = []                  # IDs do Telegram de outras pessoas que também podem apagar (o gestor já pode)
 # Palavras-chave (vale a raiz: "quebr" pega quebra, quebrou, quebrado; maiúsculas e acentos não importam)
 #   palavras_abrem     → a mensagem/foto vira ocorrência na hora
 #   palavras_perguntam → o robô pergunta "isso é uma ocorrência?" com botão Sim / Não
