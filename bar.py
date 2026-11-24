@@ -298,6 +298,8 @@ def texto_cobranca(r: dict, nivel: str, rotulo: str, fim: datetime, feitos: int)
         if meta(r) > 1:
             L.append(f"Situação: {situacao(r, feitos)}")
         L += ["", onde]
+        if r.get("marcar_no_lembrete") and r.get("marcar"):
+            L += ["", B.marcacoes(r["marcar"])]
         return "\n".join(L)
     L = [f"🚨🚨 <b>{B.esc(r['nome'].upper())}</b> 🚨🚨", "",
          f"Período: {B.esc(rotulo)} · prazo {prazo}",
@@ -326,6 +328,13 @@ def texto_agrupado(topico: str, itens) -> tuple[str, InlineKeyboardMarkup | None
                                                          callback_data=f"bf|{r['id']}|{pchave}")]
                                    for r, _, _, _, _, pchave in itens])
         return "\n".join(L), kb
+    # lembrete: só marca quem pediu para ser marcado também no lembrete (ex.: nutrição)
+    quem = []
+    for r, *_ in itens:
+        if r.get("marcar_no_lembrete"):
+            quem += [m for m in r.get("marcar", []) if m not in quem]
+    if quem:
+        L += ["", B.marcacoes(quem)]
     return "\n".join(L), None
 
 
