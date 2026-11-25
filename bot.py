@@ -3156,6 +3156,63 @@ def _reenvios():
 ARQ_LK_AREAS = DADOS / "leankeep_areas.json"
 
 
+async def cmd_tagme_campos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/tagme_campos – mostra, no privado do gestor, COMO a Tagme manda uma reserva (nomes dos campos,
+    com os textos mascarados), para achar em qual campo vem o nome do cliente."""
+    if not _eh_gestor(update):
+        await update.effective_message.reply_text("Só o gestor pode usar /tagme_campos.")
+        return
+    if not TG:
+        await update.effective_message.reply_text("A Tagme não está configurada.")
+        return
+    h = hoje()
+    res = []
+    for dia in (h + timedelta(days=1), h, h + timedelta(days=2)):
+        try:
+            res = await asyncio.wait_for(asyncio.to_thread(TG.reservas, dia), 120)
+        except Exception as e:
+            await enviar(context.bot, update.effective_chat.id, f"Erro ao consultar a Tagme: {esc(e)}")
+            return
+        if res:
+            break
+    if not res:
+        await enviar(context.bot, update.effective_chat.id, "Não achei reservas para hoje, amanhã ou depois.")
+        return
+
+    def mascara(v: str) -> str:  # "Maria Souza" → "M**** S****" (dá para ver o formato sem expor o dado)
+        return " ".join(w[:1] + "*" * min(len(w) - 1, 4) for w in str(v).split()[:4])[:40]
+
+    def campos(o, pre="", prof=0, L=None):
+        L = [] if L is None else L
+        if prof > 4:
+            return L
+        if isinstance(o, dict):
+            for k, v in o.items():
+                cam = f"{pre}.{k}" if pre else k
+                if isinstance(v, (dict, list)):
+                    campos(v, cam, prof + 1, L)
+                elif isinstance(v, str):
+                    kl = k.lower()
+                    livre = (re.fullmatch(r"\d{4}-\d{2}-\d{2}T[\d:.]+(Z|[+\-]\d{2}:?\d{2})?", v) or len(v) <= 3
+                             or any(t in kl for t in ("status", "type", "tipo", "origin", "source", "channel", "lang")))
+                    vis = v if livre else mascara(v)
+                    L.append(f"{cam} = \"{vis}\"" if v.strip() else f"{cam} = (vazio)")
+                else:
+                    L.append(f"{cam} = {v!r}"[:80])
+        elif isinstance(o, list):
+            if o:
+                campos(o[0], pre + "[0]", prof + 1, L)
+            else:
+                L.append(f"{pre} = [] (lista vazia)")
+        return L
+
+    o = res[0]
+    L = [f"🔎 <b>Tagme – campos de uma reserva</b> ({len(res)} no dia; mostrando a 1ª)",
+         f"Nome que o robô achou: <b>{esc(_nome_completo(o))}</b>", ""]
+    L += [esc(x) for x in campos(o)[:120]]
+    await enviar(context.bot, update.effective_chat.id, "\n".join(L))
+
+
 async def cmd_testar_leankeep(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/testar_leankeep – TESTE só de leitura da parte antiga do Leankeep: abre o formulário de
     ocorrência nova, lista grupos e áreas da unidade. Não salva nada no Leankeep."""
@@ -3878,6 +3935,7 @@ def montar_app(token: str) -> Application:
     app.add_handler(CommandHandler("reativar", cmd_reativar))
     app.add_handler(CommandHandler("apagar", cmd_apagar))
     app.add_handler(CommandHandler("testar_leankeep", cmd_testar_leankeep))
+    app.add_handler(CommandHandler("tagme_campos", cmd_tagme_campos))
     app.add_handler(CallbackQueryHandler(botao_reativar, pattern=r"^ocr\|"))
     app.add_handler(CommandHandler("cancelar", cmd_cancelar))
     app.add_handler(CallbackQueryHandler(botao_alerta, pattern=r"^al\|"))
