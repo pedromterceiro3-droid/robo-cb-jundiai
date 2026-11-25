@@ -210,14 +210,17 @@ class Legado:
         if atual and atual[0] == str(sid):
             return
         s = self.c("site")
-        # o site dispara a troca pelo link do campo ("...$Site0$Link"), não pelo campo em si
-        self._postback(s + "$Link", {s + "$Value": valor_qs(sid, nome), s + "$Text": nome})
+        # o site faz __doPostBack(id do campo com "_"), ex.: ctl01_PageContent_..._Site0 (ApplicationWebForm.js)
+        self._postback(s.replace("$", "_"), {s + "$Value": valor_qs(sid, nome), s + "$Text": nome})
         if (self.unidade() or ("",))[0] != str(sid):
-            raise RuntimeError(f"não consegui escolher a unidade {nome} (ficou {self.unidade()})")
+            nomes_site = [k for k in self.campos if "Site0" in k][:4]
+            raise RuntimeError(f"não consegui escolher a unidade {nome} (ficou {self.unidade()}). "
+                               f"prefixo={self.pre} | campos={nomes_site} | 57896 na resposta={'57896' in self.html} | "
+                               f"erro na página={re.findall(r'(?i)(erro[^<]{0,80}|invalid[^<]{0,80})', self.html)[:2]}")
 
     def escolher_grupo(self, gid: str, nome: str):
         g = self.c("grupo")
-        self._postback(g + "$Link", {g + "$Value": valor_qs(gid, nome), g + "$Text": nome})
+        self._postback(g.replace("$", "_"), {g + "$Value": valor_qs(gid, nome), g + "$Text": nome})
 
     def areas(self) -> list[tuple[str, str]]:
         u = _seletor_url(self.html, "Areas")
