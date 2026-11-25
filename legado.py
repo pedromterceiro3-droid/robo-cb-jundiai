@@ -100,7 +100,8 @@ def _ler_form(html: str) -> tuple[str, dict]:
 
 def _seletor_url(html: str, pasta: str) -> str | None:
     """Link do seletor (ex.: Areas/Areas-QuickSelector.aspx?...) que a própria página monta."""
-    m = re.search(r"((?:\.\./)?" + pasta + r"/[A-Za-z]+-QuickSelector\.aspx\?.*?)(?:&#39;|'|\"|\s)", html)
+    # "Areas/Areas-QuickSelector" — sem pegar o "GruposAreas/GruposAreas-QuickSelector" por engano
+    m = re.search(r"((?:\.\./)?(?<![A-Za-z])" + pasta + "/" + pasta + r"-QuickSelector\.aspx\?.*?)(?:&#39;|'|\"|\s)", html)
     if not m:
         return None
     u = unescape(m.group(1)).replace("\\u0026", "&")
