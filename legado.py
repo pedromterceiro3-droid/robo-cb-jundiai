@@ -132,6 +132,7 @@ class Legado:
                                                            "tipoNome": "Building"}, separators=(",", ":")),
                                   domain=dom, path="/")
         self.pre = "ctl01"
+        self.modo_escolha = None
         self.html = ""
         self.action = ""
         self.campos: dict[str, str] = {}
@@ -190,6 +191,61 @@ class Legado:
         self._atualizar(r.text, str(r.url))
         return r.text
 
+    def _postback_async(self, alvo: str, extra: dict | None = None):
+        """Postback "AJAX" (UpdatePanel), igual ao navegador ao fechar a janelinha de seleção."""
+        dados = dict(self.campos)
+        dados.update(extra or {})
+        dados[f"{self.pre}$scriptManager1"] = f"{self.pre}$PageContent$UpdatePanel1|{alvo}"
+        dados["__EVENTTARGET"] = alvo
+        dados["__EVENTARGUMENT"] = ""
+        dados["__ASYNCPOST"] = "true"
+        r = self.http.post(self.action, data=dados, headers={
+            "Referer": quote(self.action, safe=":/?&=%#;+,@!$'()*~.-_"),
+            "X-MicrosoftAjax": "Delta=true", "X-Requested-With": "XMLHttpRequest",
+            "Content-Type": "application/x-www-form-urlencoded; charset=utf-8"})
+        r.raise_for_status()
+        txt = r.text
+        if not re.match(r"^\d+\|", txt):  # não veio no formato AJAX: tenta como página inteira
+            if "Descricao" in txt:
+                self._atualizar(txt, str(r.url))
+            return
+        # formato: tamanho|tipo|id|conteúdo|
+        i, paineis, ocultos = 0, [], {}
+        while i < len(txt):
+            j = txt.index("|", i); n = int(txt[i:j])
+            k = txt.index("|", j + 1); tipo = txt[j + 1:k]
+            m = txt.index("|", k + 1); ident = txt[k + 1:m]
+            conteudo = txt[m + 1:m + 1 + n]
+            i = m + 1 + n + 1
+            if tipo == "updatePanel":
+                paineis.append(conteudo)
+            elif tipo == "hiddenField":
+                ocultos[ident] = conteudo
+            elif tipo == "error" or tipo == "pageRedirect":
+                raise RuntimeError(f"o Leankeep respondeu {tipo}: {unescape(conteudo)[:150]}")
+        for painel in paineis:
+            _, novos = _ler_form(painel)
+            self.campos.update(novos)
+        self.campos.update(ocultos)
+        if paineis:
+            self.html = "\n".join(paineis) + self.html
+
+    def _escolher(self, chave: str, vid: str, nome: str, conferir) -> bool:
+        """Tenta os jeitos possíveis de avisar o servidor da escolha; para no que funcionar."""
+        c = self.c(chave)
+        extra = {c + "$Value": valor_qs(vid, nome), c + "$Text": nome}
+        for modo, alvo in (("async", c.replace("$", "_")), ("async", c), ("async", c + "$Link"),
+                           ("cheio", c.replace("$", "_")), ("cheio", c + "$Link")):
+            try:
+                (self._postback_async if modo == "async" else self._postback)(alvo, extra)
+            except Exception as e:
+                log.info("Leankeep antigo: escolha %s via %s/%s falhou: %s", chave, modo, alvo, e)
+                continue
+            if conferir():
+                self.modo_escolha = (modo, alvo.replace(c, "{c}"))
+                return True
+        return False
+
     # ---------- listas ----------
     def unidade(self) -> tuple[str, str] | None:
         try:
@@ -210,17 +266,18 @@ class Legado:
         if atual and atual[0] == str(sid):
             return
         s = self.c("site")
-        # o site faz __doPostBack(id do campo com "_"), ex.: ctl01_PageContent_..._Site0 (ApplicationWebForm.js)
-        self._postback(s.replace("$", "_"), {s + "$Value": valor_qs(sid, nome), s + "$Text": nome})
-        if (self.unidade() or ("",))[0] != str(sid):
+        ok = self._escolher("site", sid, nome, lambda: (self.unidade() or ("",))[0] == str(sid)
+                            and _seletor_url(self.html, "GruposAreas") and "SiteID=" in (_seletor_url(self.html, "GruposAreas") or ""))
+        if not ok:
             nomes_site = [k for k in self.campos if "Site0" in k][:4]
             raise RuntimeError(f"não consegui escolher a unidade {nome} (ficou {self.unidade()}). "
                                f"prefixo={self.pre} | campos={nomes_site} | 57896 na resposta={'57896' in self.html} | "
                                f"erro na página={re.findall(r'(?i)(erro[^<]{0,80}|invalid[^<]{0,80})', self.html)[:2]}")
 
     def escolher_grupo(self, gid: str, nome: str):
-        g = self.c("grupo")
-        self._postback(g.replace("$", "_"), {g + "$Value": valor_qs(gid, nome), g + "$Text": nome})
+        antes = _seletor_url(self.html, "Areas") or ""
+        self._escolher("grupo", gid, nome, lambda: "GrupoAreaSelectID=" in (_seletor_url(self.html, "Areas") or "")
+                       and (_seletor_url(self.html, "Areas") or "") != antes)
 
     def areas(self) -> list[tuple[str, str]]:
         u = _seletor_url(self.html, "Areas")
@@ -238,6 +295,7 @@ def testar(token: str, refresh: str | None = None, max_grupos: int = 20, empresa
     lg = Legado(token, refresh, empresa_id).abrir()
     lg.escolher_unidade(*unidade)
     res = {"unidade": lg.unidade(), "emitente": lg.campos.get(lg.c("emitente") + "$Text"), "prefixo": lg.pre,
+           "modo": lg.modo_escolha,
            "prioridades": PRIORIDADES, "grupos": {}}
     for gid, nome in lg.grupos()[:max_grupos]:
         try:
