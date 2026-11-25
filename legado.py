@@ -133,6 +133,7 @@ class Legado:
                                   domain=dom, path="/")
         self.pre = "ctl01"
         self.modo_escolha = None
+        self.ult_areas = {}
         self.html = ""
         self.action = ""
         self.campos: dict[str, str] = {}
@@ -276,14 +277,19 @@ class Legado:
 
     def escolher_grupo(self, gid: str, nome: str):
         antes = _seletor_url(self.html, "Areas") or ""
-        self._escolher("grupo", gid, nome, lambda: "GrupoAreaSelectID=" in (_seletor_url(self.html, "Areas") or "")
-                       and (_seletor_url(self.html, "Areas") or "") != antes)
+        return self._escolher("grupo", gid, nome, lambda: "GrupoAreaSelectID=" in (_seletor_url(self.html, "Areas") or "")
+                              and (_seletor_url(self.html, "Areas") or "") != antes)
 
     def areas(self) -> list[tuple[str, str]]:
         u = _seletor_url(self.html, "Areas")
         if not u:
             raise RuntimeError("não achei o seletor de Áreas")
-        return _itens_seletor(self.http.get(u).text)
+        r = self.http.get(u)
+        itens = _itens_seletor(r.text)
+        self.ult_areas = {"url_tem_grupo": "GrupoAreaSelectID=" in u, "status": r.status_code, "tam": len(r.text),
+                          "final": str(r.url)[:60], "linhas": r.text.count("selectorMultiSelectRowClick"),
+                          "titulo": (re.search(r"<title>\s*(.*?)\s*</title>", r.text, re.S) or [None, "?"])[1][:40]}
+        return itens
 
 
 UNIDADE = ("57896", "CB JUNDIAÍ")
@@ -299,8 +305,10 @@ def testar(token: str, refresh: str | None = None, max_grupos: int = 20, empresa
            "prioridades": PRIORIDADES, "grupos": {}}
     for gid, nome in lg.grupos()[:max_grupos]:
         try:
-            lg.escolher_grupo(gid, nome)
-            res["grupos"][f"{gid}|{nome}"] = lg.areas()
+            ok = lg.escolher_grupo(gid, nome)
+            areas = lg.areas()
+            res["grupos"][f"{gid}|{nome}"] = areas if areas else (
+                f"0 áreas (grupo aceito={ok}, modo={lg.modo_escolha}, diagnóstico={getattr(lg, 'ult_areas', {})})")
         except Exception as e:
             res["grupos"][f"{gid}|{nome}"] = f"erro: {e}"
     return res

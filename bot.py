@@ -3311,7 +3311,7 @@ async def cmd_testar_leankeep(update: Update, context: ContextTypes.DEFAULT_TYPE
     for chave, areas in res["grupos"].items():
         nome = chave.split("|", 1)[1]
         if isinstance(areas, str):
-            L.append(f"• {esc(nome)}: {esc(areas[:120])}")
+            L.append(f"• {esc(nome)}: {esc(areas[:400])}")
         else:
             nomes = ", ".join(a[1].split("/")[0].title() for a in areas[:12])
             L.append(f"• <b>{esc(nome)}</b> ({len(areas)}): {esc(nomes)}" + (" …" if len(areas) > 12 else ""))
