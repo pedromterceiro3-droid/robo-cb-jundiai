@@ -152,6 +152,7 @@ apagar_ao_concluir = true        # concluída: apaga do grupo as mensagens do ro
 #   sem nenhuma delas  → é só conversa, não vira ocorrência
 # Foto mandada sem texto + texto com a palavra em até 2 min (mesma pessoa) = uma ocorrência com foto.
 exigir_palavra_chave = true
+perguntar_toda_foto = true      # foto sem palavra-chave: robô pergunta [📌 Abrir ocorrência] [✅ Conclusão] [Não é ocorrência]
 # --- abrem ocorrência na hora (defeito claro) ---
 palavras_abrem = [
   "ocorrência", "manutenção", "danific", "avariad", "quebr", "estrag", "defeit", "pifou", "pifad",

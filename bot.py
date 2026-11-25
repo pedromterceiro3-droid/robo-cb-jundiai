@@ -1285,6 +1285,36 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
                               "ultima_msg": enviada.isoformat(timespec="seconds")}
         dados["candidatas"] = cands
         gravar(ARQ_OCORR, dados)
+        # foto nova sem palavra-chave: o robô pergunta com botões (abrir / conclusão / não é ocorrência)
+        if tem_midia and oc_cfg().get("perguntar_toda_foto", True):
+            pergs = dados.setdefault("perguntas", {})
+            mesma = next((pg for pg in pergs.values() if pg.get("chat_id") == msg.chat.id and (
+                (msg.media_group_id and pg.get("album") == msg.media_group_id)
+                or (pg.get("autor_id") == uid and abs((enviada - datetime.fromisoformat(
+                    pg.get("ultima_msg", pg["criada"]))).total_seconds()) <= janela))), None)
+            if mesma:  # outra foto do mesmo álbum / da mesma pessoa logo em seguida: entra na mesma pergunta
+                mesma["msg_ids"].append(msg.message_id)
+                mesma["foto"] = mesma.get("foto") or bool(msg.photo)
+                if texto and not mesma.get("texto"):
+                    mesma["texto"] = texto
+                mesma["ultima_msg"] = enviada.isoformat(timespec="seconds")
+                gravar(ARQ_OCORR, dados)
+                return
+            c = cands[chave_c]
+            chave_p = f"{msg.chat.id}:{msg.message_id}"
+            pergs[chave_p] = {"chat_id": msg.chat.id, "topico": msg.message_thread_id if msg.is_topic_message else 0,
+                              "msg_ids": list(c["msg_ids"]), "album": c.get("album"), "autor": quem, "autor_id": uid,
+                              "texto": c.get("texto", ""), "foto": c.get("foto"), "criada": c["criada"],
+                              "ultima_msg": enviada.isoformat(timespec="seconds"), "resolvida": None}
+            gravar(ARQ_OCORR, dados)
+            r = await enviar(context.bot, msg.chat.id, f"📷 {esc(quem.split()[0])}, do que se trata esta foto?",
+                             message_thread_id=msg.message_thread_id if msg.is_topic_message else None,
+                             reply_to_message_id=msg.message_id, reply_markup=teclado_pergunta(chave_p))
+            if r is not None:
+                dados = oc_dados()
+                if chave_p in dados.get("perguntas", {}):
+                    dados["perguntas"][chave_p]["msg_pergunta"] = r.message_id
+                    gravar(ARQ_OCORR, dados)
         return
     if nivel == "abre" and not oc_cfg().get("exigir_palavra_chave", True) and not tem_midia \
             and len(texto) < int(oc_cfg().get("min_caracteres_texto", 15)):
@@ -1293,6 +1323,15 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ids, foto, criada, album = [msg.message_id], bool(msg.photo), enviada.isoformat(timespec="minutes"), msg.media_group_id
     if cand:  # junta a foto (ou texto) mandada pouco antes, sem palavra-chave
         cands.pop(chave_c)
+        # a pergunta "do que se trata esta foto?" já não precisa: o texto com a palavra-chave respondeu
+        for kp, pg in list(dados.get("perguntas", {}).items()):
+            if pg.get("chat_id") == msg.chat.id and set(pg.get("msg_ids", [])) & set(cand["msg_ids"]):
+                dados["perguntas"].pop(kp)
+                if pg.get("msg_pergunta"):
+                    try:
+                        await context.bot.delete_message(msg.chat.id, pg["msg_pergunta"])
+                    except Exception:
+                        pass
         ids = cand["msg_ids"] + ids
         texto = (cand["texto"] + " " + texto).strip() if cand["texto"] else texto
         criada, album = cand["criada"], cand.get("album") or album
