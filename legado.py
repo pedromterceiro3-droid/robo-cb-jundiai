@@ -20,6 +20,8 @@ from datetime import datetime
 from html import unescape
 from html.parser import HTMLParser
 
+from urllib.parse import quote
+
 import httpx
 
 log = logging.getLogger("legado")
@@ -176,7 +178,9 @@ class Legado:
         dados.update(extra or {})
         dados["__EVENTTARGET"] = alvo
         dados["__EVENTARGUMENT"] = ""
-        r = self.http.post(self.action, data=dados, headers={"Referer": self.action})
+        # cabeçalho só aceita ASCII: o endereço vai codificado (antes dava "'ascii' codec can't encode")
+        r = self.http.post(self.action, data=dados,
+                           headers={"Referer": quote(self.action, safe=":/?&=%#;+,@!$'()*~.-_")})
         r.raise_for_status()
         self._atualizar(r.text, str(r.url))
         return r.text
@@ -195,6 +199,14 @@ class Legado:
             raise RuntimeError("não achei o seletor de Grupo de Áreas")
         return _itens_seletor(self.http.get(u).text)
 
+    def escolher_unidade(self, sid: str, nome: str):
+        """Fixa a unidade (CB JUNDIAÍ): sem isso o seletor traz grupos de todas as lojas."""
+        atual = self.unidade()
+        if atual and atual[0] == str(sid):
+            return
+        s = self.c("site")
+        self._postback(s, {s + "$Value": valor_qs(sid, nome), s + "$Text": nome})
+
     def escolher_grupo(self, gid: str, nome: str):
         g = self.c("grupo")
         self._postback(g, {g + "$Value": valor_qs(gid, nome), g + "$Text": nome})
@@ -206,9 +218,14 @@ class Legado:
         return _itens_seletor(self.http.get(u).text)
 
 
-def testar(token: str, refresh: str | None = None, max_grupos: int = 20, empresa_id: str = "3802") -> dict:
+UNIDADE = ("57896", "CB JUNDIAÍ")
+
+
+def testar(token: str, refresh: str | None = None, max_grupos: int = 20, empresa_id: str = "3802",
+           unidade: tuple[str, str] = UNIDADE) -> dict:
     """Só leitura: abre o formulário novo, lista os grupos e as áreas de cada grupo. NÃO salva."""
     lg = Legado(token, refresh, empresa_id).abrir()
+    lg.escolher_unidade(*unidade)
     res = {"unidade": lg.unidade(), "emitente": lg.campos.get(lg.c("emitente") + "$Text"), "prefixo": lg.pre,
            "prioridades": PRIORIDADES, "grupos": {}}
     for gid, nome in lg.grupos()[:max_grupos]:
