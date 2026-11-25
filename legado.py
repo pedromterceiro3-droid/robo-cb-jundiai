@@ -182,6 +182,11 @@ class Legado:
         r = self.http.post(self.action, data=dados,
                            headers={"Referer": quote(self.action, safe=":/?&=%#;+,@!$'()*~.-_")})
         r.raise_for_status()
+        if "TabPanelAnomalia" not in r.text or "Descricao" not in r.text:
+            corpo = " ".join(unescape(re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ", r.text,
+                                             flags=re.S | re.I)).split())
+            raise RuntimeError(f"depois de escolher ({alvo.rsplit('$', 2)[-2]}), o Leankeep não devolveu o "
+                               f"formulário: {str(r.url)[:70]} | {corpo[:200]}")
         self._atualizar(r.text, str(r.url))
         return r.text
 
@@ -205,11 +210,14 @@ class Legado:
         if atual and atual[0] == str(sid):
             return
         s = self.c("site")
-        self._postback(s, {s + "$Value": valor_qs(sid, nome), s + "$Text": nome})
+        # o site dispara a troca pelo link do campo ("...$Site0$Link"), não pelo campo em si
+        self._postback(s + "$Link", {s + "$Value": valor_qs(sid, nome), s + "$Text": nome})
+        if (self.unidade() or ("",))[0] != str(sid):
+            raise RuntimeError(f"não consegui escolher a unidade {nome} (ficou {self.unidade()})")
 
     def escolher_grupo(self, gid: str, nome: str):
         g = self.c("grupo")
-        self._postback(g, {g + "$Value": valor_qs(gid, nome), g + "$Text": nome})
+        self._postback(g + "$Link", {g + "$Value": valor_qs(gid, nome), g + "$Text": nome})
 
     def areas(self) -> list[tuple[str, str]]:
         u = _seletor_url(self.html, "Areas")
