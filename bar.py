@@ -59,6 +59,18 @@ def dados() -> dict:
                 e["periodo"] = periodo(r, datetime.fromisoformat(e["em"]))[0]
             except Exception:
                 pass
+    # postagens feitas logo depois do prazo que caíram no período seguinte (correção de 25/11)
+    for e in d["evid"]:
+        r = rot(e.get("rotina", ""))
+        if (r and r.get("tipo") == "semanal" and len(r.get("dias", [])) > 1 and not e.get("reslot2")
+                and "postagem" in str(e.get("via", ""))):
+            e["reslot2"] = 1
+            try:
+                em_ = datetime.fromisoformat(e["em"])
+                if periodo(r, em_)[0] == e.get("periodo"):  # só se foi pela hora da postagem (sem data citada)
+                    e["periodo"] = periodo_entrega(r, None, em_, em_)[0]
+            except Exception:
+                pass
     return d
 
 
@@ -485,10 +497,24 @@ def link_msg(msg) -> str:
     return link
 
 
+def periodo_entrega(r: dict, d: dict | None, quando: datetime, postada: datetime | None):
+    """Período em que a entrega conta. Rotina de vários dias (ex.: seg/qua/sex): postagem logo DEPOIS
+    do prazo (até 'tolerancia_atraso_horas', padrão 12 h) conta para o período que acabou de vencer,
+    não para o próximo. Atraso maior: escrever a data na legenda (ex.: "Auditoria 25/11")."""
+    pchave, fim, rotulo = periodo(r, quando)
+    multi = r.get("tipo") == "semanal" and len(r.get("dias", [])) > 1
+    if multi and postada and quando == postada:
+        pch_a, fim_a, rot_a = periodo(r, prazo_anterior(r, fim))
+        if fim_a < postada:
+            if postada - fim_a <= timedelta(hours=float(cfg().get("tolerancia_atraso_horas", 12))):
+                return pch_a, fim_a, rot_a
+    return pchave, fim, rotulo
+
+
 def registrar(d: dict, r: dict, quando: datetime, quem: str, via: str, link: str = "", texto: str = "",
               postada: datetime | None = None):
     """'quando' = momento que define o período (data citada ou hora da postagem)."""
-    pchave, fim, rotulo = periodo(r, quando)
+    pchave, fim, rotulo = periodo_entrega(r, d, quando, postada)
     ev = {"rotina": r["id"], "periodo": pchave, "em": (postada or quando).isoformat(timespec="minutes"),
           "quem": quem, "via": via, "link": link, "texto": texto[:300]}
     if postada and postada > fim:
