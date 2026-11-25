@@ -2673,6 +2673,9 @@ def _id(o: dict) -> str:
 
 
 def _primeiro_nome(o: dict) -> str:
+    g = _hospede_tagme(o)
+    if g and g.get("name"):
+        return str(g["name"]).strip().split(" ")[0].title()
     v = _c(o, "name", "guestName", "customerName", "firstName", padrao="")
     if isinstance(v, dict):
         v = _c(v, "first", "firstName", "name", padrao="")
@@ -2874,7 +2877,24 @@ def _nome_profundo(o, caminho="", prof=0, achados=None):
     return achados
 
 
+def _hospede_tagme(o: dict) -> dict | None:
+    """Na Tagme o cliente vem em venueUser.guest (name + lastName)."""
+    vu = o.get("venueUser") if isinstance(o, dict) else None
+    if isinstance(vu, dict):
+        g = vu.get("guest")
+        if isinstance(g, dict):
+            return g
+        if vu.get("searchName"):
+            return {"name": vu.get("searchName"), "lastName": vu.get("searchLastName")}
+    return None
+
+
 def _nome_completo(o: dict) -> str:
+    g = _hospede_tagme(o)
+    if g and (g.get("name") or g.get("lastName")):
+        v = " ".join(str(x).strip() for x in (g.get("name"), g.get("lastName")) if x and str(x).strip())
+        if v:
+            return " ".join(v.split()).title()
     v = _c(o, "name", "guestName", "customerName", "fullName", padrao="")
     if isinstance(v, dict):
         v = " ".join(str(x) for x in (v.get("first") or v.get("firstName"), v.get("last") or v.get("lastName")) if x)
