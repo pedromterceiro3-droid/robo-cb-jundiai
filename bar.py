@@ -432,6 +432,28 @@ async def tick(context):
     gravar(d)
 
 
+async def complemento(bot, msg, cands, texto: str):
+    """Mensagem curta que traz a palavra obrigatória de uma rotina (ex.: chopp no desperdício).
+    Vale para o registro daquele dia: o robô não cobra mais a palavra e agradece."""
+    quando = msg.date.astimezone(B.FUSO) if msg.date else datetime.now(B.FUSO)
+    quem = msg.from_user.full_name if msg.from_user else "?"
+    for r in cands:
+        palavra = r.get("palavra_obrigatoria")
+        if not palavra or B.normalizar(palavra) not in B.normalizar(texto):
+            continue
+        d = dados()
+        pchave, _, rotulo = periodo(r, quando_referencia(texto, quando))
+        d.setdefault("complementos", {}).setdefault(f"{r['id']}|{pchave}", []).append(
+            {"quem": quem, "em": quando.isoformat(timespec="minutes"), "texto": texto[:300]})
+        gravar(d)
+        await agradecer(bot, msg.chat.id, msg.message_thread_id if msg.is_topic_message else None, msg.message_id,
+                        f"Anotado, {B.esc(quem.split(' ')[0])}! 🙌\n"
+                        f"<b>{B.esc(palavra.capitalize())}</b> incluído em <b>{B.esc(r.get('nome_curto', r['nome']))}</b>"
+                        f" ({B.esc(rotulo)}) ✅")
+        return True
+    return False
+
+
 async def checar_palavra(bot, d, r, pchave, fim, agora, desde):
     """Ex.: desperdício entregue sem 'chopp' → avisa uma vez, no prazo."""
     palavra = r.get("palavra_obrigatoria")
@@ -442,6 +464,8 @@ async def checar_palavra(bot, d, r, pchave, fim, agora, desde):
         return
     alvo = B.normalizar(palavra)
     if any(alvo in B.normalizar(e.get("texto", "")) for e in entregas(d, r["id"], pchave)):
+        return
+    if any(alvo in B.normalizar(c.get("texto", "")) for c in d.get("complementos", {}).get(f"{r['id']}|{pchave}", [])):
         return
     d["enviados"][marca] = agora.date().isoformat()
     chat, top = destino(r["topico"])
@@ -589,7 +613,13 @@ async def on_mensagem(update: Update, context) -> bool:
     if not chave:
         return True
     cands = [r for r in rotinas() if r.get("topico") == chave and r.get("tipo") != "diretor"]
-    if not cands or not vale_como_evidencia(msg):
+    if not cands:
+        return True
+    # complemento obrigatório escrito depois (ex.: "1l chopp Brahma" no desperdício): junta ao registro do dia
+    texto0 = (msg.text or msg.caption or "").strip()
+    if not vale_como_evidencia(msg):
+        if texto0:
+            await complemento(context.bot, msg, cands, texto0)
         return True
     if msg.media_group_id:  # álbum: só a 1ª foto conta
         d = dados()

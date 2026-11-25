@@ -2695,11 +2695,15 @@ def _hora_local(o: dict):
         if re.fullmatch(r"\d{1,2}:\d{2}(:\d{2})?", v.strip()):
             h, m = v.strip().split(":")[:2]
             return int(h), int(m)
-        d = _dt(v)
-        if d and "T" in v:
-            if v.endswith("Z") or "+" in v[10:]:
-                d = d.astimezone(FUSO)
-            if (d.hour, d.minute) != (0, 0):
+        if "T" in v:
+            # A Tagme grava o horário LOCAL com "Z" no fim (ex.: 19:30 vem como "T19:30:00.000Z").
+            # Converter para o fuso tirava 3 horas (19:30 aparecia como 16:30), então vale o relógio escrito.
+            if tg_cfg().get("horario_em_utc", False):
+                d = _dt(v)
+            else:
+                m = re.search(r"T(\d{2}):(\d{2})", v)
+                d = datetime(2000, 1, 1, int(m.group(1)), int(m.group(2))) if m else None
+            if d and (d.hour, d.minute) != (0, 0):
                 return d.hour, d.minute
     return None
 
