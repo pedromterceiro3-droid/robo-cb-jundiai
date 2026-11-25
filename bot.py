@@ -772,6 +772,8 @@ def envios_diarios():
     if rel_cfg().get("ativo", True):
         lst.append(("lembrete_relogio", lembrete_relogio, hora(rel_cfg().get("horario", "23:00")),
                     TODOS_DIAS, 1))
+    if card_cfg().get("ativo", True):
+        lst.append(("cardapio", cardapio_diario, hora(card_cfg().get("horario", "09:00")), TODOS_DIAS, 10))
     if sem_cfg().get("ativo", True):
         dia_txt, hora_txt = str(sem_cfg().get("quando", "seg 08:00")).split()
         lst.append(("resumo_semanal", enviar_semanal, hora(hora_txt), ((DIAS[dia_txt] + 1) % 7,), 36))
@@ -3213,6 +3215,115 @@ def _reenvios():
 
 
 ARQ_LK_AREAS = DADOS / "leankeep_areas.json"
+ARQ_CARDAPIO = DADOS / "cardapio.json"
+
+
+def card_cfg() -> dict:
+    return CFG.get("cardapio", {}) or {}
+
+
+async def cartao_cardapio(bot, chat, item: dict, tipo: str):
+    """Um item do cardápio: foto do produto + código, descrição e preço, com botões."""
+    import cardapio as CD
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 Abrir no GIA", url=CD.LINK_GIA),
+                                InlineKeyboardButton("📖 Ver no cardápio", url=CD.LINK_CARDAPIO)]])
+    texto = CD.legenda(item, tipo, esc)
+    if item.get("foto"):
+        try:
+            await bot.send_photo(chat, item["foto"], caption=limpar_texto(texto)[:1024], parse_mode=ParseMode.HTML,
+                                 reply_markup=kb)
+            return
+        except Exception as e:
+            log.info("Cardápio: não consegui mandar a foto de %s: %s", item.get("codigo"), e)
+    await enviar(bot, chat, texto, reply_markup=kb)
+
+
+async def cardapio_diario(context: ContextTypes.DEFAULT_TYPE, chat=None):
+    """Compara o cardápio da Tagme de hoje com o da última vez e manda o que mudou (só no privado)."""
+    import cardapio as CD
+    destino = chat or CFG.get("gestor_chat_id")
+    if not destino:
+        return
+    try:
+        agora = await asyncio.wait_for(asyncio.to_thread(CD.buscar, int(card_cfg().get("store_id", 1217))), 120)
+    except Exception as e:
+        log.warning("Cardápio: erro ao ler a Tagme: %s", e)
+        await enviar(context.bot, destino, f"⚠️ Não consegui ler o cardápio da Tagme agora: {esc(str(e)[:200])}")
+        return
+    ant = ler(ARQ_CARDAPIO, {})
+    gravar(ARQ_CARDAPIO, {"em": datetime.now(FUSO).isoformat(timespec="minutes"), "itens": agora})
+    if not ant.get("itens"):
+        await enviar(context.bot, destino,
+                     f"📸 <b>Cardápio Tagme – CB Jundiaí</b>\n\nPrimeira leitura feita: <b>{len(agora)}</b> itens "
+                     f"(contando cada tamanho). A partir de agora, todo dia às {esc(card_cfg().get('horario', '09:00'))} "
+                     f"aviso o que entrou, saiu ou mudou de preço.\n\nPara ver um item: /cardapio_item código ou nome")
+        return
+    dif = CD.comparar(ant["itens"], agora)
+    n = sum(len(v) for v in dif.values())
+    desde = ant.get("em", "")[:16].replace("T", " ")
+    if not n:
+        if chat:  # pedido na mão: responde mesmo sem mudança
+            await enviar(context.bot, destino, f"🍽️ Cardápio Tagme: nada mudou desde {esc(desde)} "
+                                               f"({len(agora)} itens).")
+        return
+    L = [f"🍽️ <b>Cardápio Tagme x ontem – {datetime.now(FUSO):%d/%m}</b>", "",
+         f"{len(agora)} itens no cardápio (comparado com {esc(desde)})",
+         f"🆕 Entraram: <b>{len(dif['entrou'])}</b> · ❌ Saíram: <b>{len(dif['saiu'])}</b> · "
+         f"💲 Preço mudou: <b>{len(dif['preco'])}</b>"]
+    await enviar(context.bot, destino, "\n".join(L))
+    limite = int(card_cfg().get("max_cartoes", 15))
+    enviados, resto = 0, []
+    for tipo in ("saiu", "entrou", "preco"):
+        for item in dif[tipo]:
+            if enviados < limite:
+                await cartao_cardapio(context.bot, destino, item, tipo)
+                enviados += 1
+            else:
+                resto.append((tipo, item))
+    if resto:
+        ic = {"entrou": "🆕", "saiu": "❌", "preco": "💲"}
+        L = [f"… e mais {len(resto)}:"] + [f"• {esc(CD.nome_item(i))} · cód. {esc(i.get('codigo') or '—')} {ic[t]}"
+                                           for t, i in resto[:60]]
+        await enviar(context.bot, destino, "\n".join(L))
+
+
+async def cmd_cardapio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/cardapio – compara agora o cardápio da Tagme com a última leitura."""
+    if not _eh_gestor(update):
+        await update.effective_message.reply_text("Só o gestor pode usar /cardapio.")
+        return
+    await cardapio_diario(context, chat=update.effective_chat.id)
+
+
+async def cmd_cardapio_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/cardapio_item 5099  ou  /cardapio_item bacalhau – mostra o(s) item(ns) do cardápio com foto."""
+    if not _eh_gestor(update):
+        await update.effective_message.reply_text("Só o gestor pode usar /cardapio_item.")
+        return
+    termo = " ".join(context.args or []).strip()
+    if not termo:
+        await update.effective_message.reply_text("Use assim: /cardapio_item 5099  ou  /cardapio_item bacalhau")
+        return
+    import cardapio as CD
+    itens = (ler(ARQ_CARDAPIO, {}) or {}).get("itens") or {}
+    if not itens:
+        try:
+            itens = await asyncio.wait_for(asyncio.to_thread(CD.buscar, int(card_cfg().get("store_id", 1217))), 120)
+        except Exception as e:
+            await enviar(context.bot, update.effective_chat.id, f"Erro ao ler o cardápio: {esc(e)}")
+            return
+    t = normalizar(termo)
+    achados = [i for i in itens.values()
+               if t in normalizar(i.get("codigo", "")).split("-") or t == normalizar(i.get("codigo", ""))
+               or t in normalizar(CD.nome_item(i))]
+    if not achados:
+        await enviar(context.bot, update.effective_chat.id,
+                     f"Não achei <b>{esc(termo)}</b> no cardápio da Tagme (pode estar fora do cardápio).")
+        return
+    for i in achados[:5]:
+        await cartao_cardapio(context.bot, update.effective_chat.id, i, "item")
+    if len(achados) > 5:
+        await enviar(context.bot, update.effective_chat.id, f"… e mais {len(achados) - 5}. Refine a busca.")
 
 
 async def cmd_tagme_campos(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3995,6 +4106,8 @@ def montar_app(token: str) -> Application:
     app.add_handler(CommandHandler("apagar", cmd_apagar))
     app.add_handler(CommandHandler("testar_leankeep", cmd_testar_leankeep))
     app.add_handler(CommandHandler("tagme_campos", cmd_tagme_campos))
+    app.add_handler(CommandHandler("cardapio", cmd_cardapio))
+    app.add_handler(CommandHandler("cardapio_item", cmd_cardapio_item))
     app.add_handler(CallbackQueryHandler(botao_reativar, pattern=r"^ocr\|"))
     app.add_handler(CommandHandler("cancelar", cmd_cancelar))
     app.add_handler(CallbackQueryHandler(botao_alerta, pattern=r"^al\|"))

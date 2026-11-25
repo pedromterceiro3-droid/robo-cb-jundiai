@@ -578,3 +578,13 @@ tipo = "diretor"
 topico = "privado"
 frequencia = "semestral"
 
+# ------------------------------------------------------------
+# CARDÁPIO TAGME (cocobambu.tagme.menu) — o que entrou, saiu ou mudou de preço
+#   Todo dia no privado do gestor, com foto, código e descrição de cada item. Só leitura.
+#   Comandos: /cardapio (compara agora) · /cardapio_item 5099 (ou parte do nome)
+# ------------------------------------------------------------
+[cardapio]
+ativo = true
+horario = "09:00"
+store_id = 1217             # código da CB Jundiaí no cardápio da Tagme
+max_cartoes = 15            # acima disso, o resto vem em lista
