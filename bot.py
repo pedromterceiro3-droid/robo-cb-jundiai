@@ -1532,7 +1532,7 @@ async def lk_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
         return
-    if o.get("leankeep") and passo in ("g", "s"):
+    if o.get("leankeep") and not str(o["leankeep"].get("numero", "")).startswith("SALVA") and passo in ("g", "s"):
         await q.answer(f"Já registrada no Leankeep: {o['leankeep'].get('numero')}", show_alert=True)
         return
     areas = lk_areas()

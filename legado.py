@@ -353,8 +353,7 @@ class Legado:
                 depois = re.search(r"\b([A-Z]\d{6})\b", texto[i:i + 200])
                 if depois:
                     return depois.group(1)
-            if "Lista de Ocorr" in texto or "Filtros Globais" in texto:
-                return "SALVA (número não identificado – veja a Lista de Ocorrências)"
+        # (só conta como salva quando o número aparece — nada de "provavelmente salvou")
         # não salvou: junta os avisos que o site mostraria (alertas, validações) e o estado dos campos
         alertas = re.findall(r"""alert\(\s*['"]([^'"]{3,200})['"]""", r.text)
         alertas += re.findall(r"""(?:ShowMessage|showMessage|MessageBox|radalert)\(\s*['"]([^'"]{3,200})['"]""", r.text)
