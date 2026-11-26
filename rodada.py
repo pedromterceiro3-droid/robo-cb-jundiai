@@ -298,6 +298,11 @@ async def rodada():
                 await B.verificar_declaradas(ctx(app))
             except Exception:
                 log.exception("Erro ao conferir baixas declaradas")
+        # relatório semanal de atividades pedido ao Leankeep: confere se ficou pronto
+        try:
+            await B.relatorio_semanal_continuar(ctx(app))
+        except Exception:
+            log.exception("Erro no relatório semanal")
         # espera tarefas que ficaram rodando (ex.: /testar)
         pend = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
         if pend:

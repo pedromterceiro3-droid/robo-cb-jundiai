@@ -3,3 +3,4 @@ httpx
 python-dotenv
 tzdata
 pillow
+openpyxl

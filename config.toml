@@ -184,6 +184,24 @@ frases_abrir = ["ocorr", "abrir chamado", "abre chamado", "abrir os", "abre os"]
 # RESUMO SEMANAL (privado do gestor) — baixas no prazo x em atraso
 #   Peça a qualquer momento: /semana (semana passada) ou /semana atual
 # ------------------------------------------------------------
+# ------------------------------------------------------------
+# RELATÓRIO SEMANAL DE ATIVIDADES (o mesmo da PLANILHA ANÁLISE - DIRETORES)
+#   Toda segunda o robô pede ao Leankeep o "Relatório de atividades" (Excel) da semana anterior,
+#   espera ficar pronto, monta a planilha (RESUMO com os 4 gráficos + BASE) e uma imagem-resumo,
+#   e manda no seu privado. Na hora: /relatorio · /relatorio atual · /relatorio 01/11 30/11
+# ------------------------------------------------------------
+[relatorio_semanal]
+ativo = true
+quando = "seg 07:30"
+unidade = "CB JUNDIAÍ"
+unidade_id = 57896
+login = "pedro.nsf"          # usuário do Leankeep usado pelo robô (o relatório fica em "Relatórios gerados" dele)
+usuario_id = 84106
+# Fechamentos feitos depois que a loja fecha: só contam como ATRASO se a baixa passar
+# deste horário do dia seguinte (compara com o nome do PLANO no Leankeep)
+prazo_madrugada = ["FECHAMENTO DA LOJA", "REGISTRO GAS", "EXAUST"]
+limite_madrugada = "03:00"
+
 [resumo_semanal]
 ativo = true
 quando = "seg 08:00"             # dia e hora do envio (resume a semana anterior, seg a dom)
@@ -199,6 +217,10 @@ horas = 3
 
 [[resumo_semanal.tolerancias]]
 palavras = ["EXAUST"]                           # desligamento da exaustão e insuflamento
+horas = 3
+
+[[resumo_semanal.tolerancias]]
+palavras = ["FECHAMENTO DA LOJA"]               # fechamento da loja (prazo 23:59 → até ~03h)
 horas = 3
 
 # ------------------------------------------------------------

@@ -782,6 +782,9 @@ def envios_diarios():
     if aud_cfg().get("ativo", True) and aud_cfg().get("lembrete_semanal", True) and MODO == "leankeep":
         dia_txt, hora_txt = str(aud_cfg().get("quando", "seg 09:30")).split()
         lst.append(("auditoria_semanal", auditoria_semanal, hora(hora_txt), ((DIAS[dia_txt] + 1) % 7,), 12))
+    if rel_sem_cfg().get("ativo", True) and MODO == "leankeep":
+        dia_txt, hora_txt = str(rel_sem_cfg().get("quando", "seg 07:30")).split()
+        lst.append(("relatorio_semanal", relatorio_semanal_job, hora(hora_txt), ((DIAS[dia_txt] + 1) % 7,), 24))
     if sem_cfg().get("ativo", True):
         dia_txt, hora_txt = str(sem_cfg().get("quando", "seg 08:00")).split()
         lst.append(("resumo_semanal", enviar_semanal, hora(hora_txt), ((DIAS[dia_txt] + 1) % 7,), 36))
@@ -3303,6 +3306,154 @@ async def enviar_semanal(context: ContextTypes.DEFAULT_TYPE):
     await enviar(context.bot, CFG.get("gestor_chat_id"), txt)
 
 
+
+# =====================================================================
+#  RELATÓRIO SEMANAL DE ATIVIDADES (o mesmo da PLANILHA ANÁLISE - DIRETORES)
+#  Toda segunda: pede ao Leankeep o Excel da semana anterior, espera ficar pronto,
+#  monta a planilha (RESUMO + BASE + gráficos) e a imagem-resumo, manda no privado.
+# =====================================================================
+ARQ_REL = DADOS / "relatorio_semanal.json"
+
+
+def rel_sem_cfg() -> dict:
+    return CFG.get("relatorio_semanal", {}) or {}
+
+
+async def relatorio_semanal_pedir(context, inicio: date | None = None, fim: date | None = None, chat=None):
+    import relatorio_semanal as RS
+    if MODO != "leankeep":
+        return
+    c = rel_sem_cfg()
+    destino = chat or CFG.get("gestor_chat_id")
+    if not (inicio and fim):
+        inicio, fim = semana_anterior()
+    try:
+        rid = await asyncio.wait_for(asyncio.to_thread(
+            RS.pedir, LK, inicio, fim, c.get("login", "pedro.nsf"), int(c.get("unidade_id", 57896))), 120)
+    except Exception as e:
+        log.exception("Relatório semanal: pedido falhou")
+        await enviar(context.bot, destino, f"⚠️ Não consegui pedir o relatório de atividades ao Leankeep.\n"
+                                           f"<i>{esc(str(e)[:250])}</i>")
+        return
+    d = ler(ARQ_REL, {})
+    d["pendente"] = {"id": rid, "inicio": inicio.isoformat(), "fim": fim.isoformat(), "chat": destino,
+                     "pedido_em": datetime.now(FUSO).isoformat(timespec="seconds")}
+    gravar(ARQ_REL, d)
+    # costuma ficar pronto em 1–3 minutos: espera um pouco; se não, a próxima rodada termina
+    for _ in range(int(c.get("espera_inicial_seg", 180)) // 30):
+        await asyncio.sleep(30)
+        if await relatorio_semanal_continuar(context):
+            return
+
+
+async def relatorio_semanal_continuar(context) -> bool:
+    """Se há relatório pedido, confere se ficou pronto; se ficou, monta e manda. True = terminou."""
+    import relatorio_semanal as RS
+    d = ler(ARQ_REL, {})
+    p = d.get("pendente")
+    if not p or MODO != "leankeep":
+        return True
+    c = rel_sem_cfg()
+    pedido_em = datetime.fromisoformat(p["pedido_em"])
+    inicio, fim = date.fromisoformat(p["inicio"]), date.fromisoformat(p["fim"])
+    try:
+        lista = await asyncio.wait_for(asyncio.to_thread(RS.gerados, LK, int(c.get("usuario_id", 84106))), 120)
+    except Exception as e:
+        log.warning("Relatório semanal: não consegui ver os relatórios gerados: %s", e)
+        return False
+    item = RS.achar(lista, p.get("id"), pedido_em, inicio, fim)
+    sit = RS.situacao_item(item) if item else "gerando"
+    if sit == "gerando":
+        if datetime.now(FUSO) - pedido_em > timedelta(hours=3):
+            d.pop("pendente", None)
+            gravar(ARQ_REL, d)
+            await enviar(context.bot, p["chat"], "⚠️ O Leankeep não terminou o relatório de atividades em 3 horas. "
+                                                 "Peça de novo com /relatorio.")
+            return True
+        return False
+    d.pop("pendente", None)
+    gravar(ARQ_REL, d)
+    if sit != "pronto":
+        await enviar(context.bot, p["chat"], f"⚠️ Relatório de atividades {inicio:%d/%m} a {fim:%d/%m}: "
+                                             + ("o Leankeep não encontrou atividades no período."
+                                                if sit == "sem_dados" else "o Leankeep deu erro ao gerar. Peça de novo com /relatorio."))
+        return True
+    try:
+        conteudo = await asyncio.wait_for(asyncio.to_thread(RS.baixar, LK, item), 300)
+        RS.configurar(c)
+        linhas, _ = await asyncio.to_thread(RS.ler_export, conteudo)
+        res = RS.resumir(linhas)
+        unidade = c.get("unidade", "CB JUNDIAÍ")
+        hist = d.setdefault("historico", {})
+        ant = hist.get((inicio - timedelta(days=7)).isoformat())
+        tot = res["total"] or 1
+        hist[inicio.isoformat()] = {s: round(res["status"][s] / tot, 4) for s in RS.SITUACOES}
+        d["historico"] = dict(sorted(hist.items())[-30:])
+        gravar(ARQ_REL, d)
+        xlsx = await asyncio.to_thread(RS.planilha, linhas, res, inicio, fim, unidade)
+        png = await asyncio.to_thread(RS.imagem, res, inicio, fim, unidade, ant)
+        png2 = await asyncio.to_thread(RS.imagem_pizza, res, inicio, fim, unidade)
+    except Exception as e:
+        log.exception("Relatório semanal: falhou ao montar")
+        await enviar(context.bot, p["chat"], f"⚠️ Baixei o relatório do Leankeep, mas não consegui montar a planilha.\n"
+                                             f"<i>{esc(str(e)[:250])}</i>")
+        return True
+    st = res["status"]
+    piores = sorted(((pl, v) for pl, v in res["planos"].items() if v[1]), key=lambda x: -(x[1][1] / x[1][0]))[:3]
+    leg = [f"📊 <b>Atividades Leankeep – {inicio:%d/%m} a {fim:%d/%m}</b>",
+           f"{res['total']} atividades · no prazo <b>{st['OK'] / tot:.1%}</b>".replace(".", ","),
+           f"Atrasadas: {st['ATRASADO']} · Antecipadas: {st['ANTECIPADO']} · Não realizadas: {st['NÃO REALIZADO']}"]
+    if piores:
+        leg.append("Mais pendências: " + "; ".join(f"{esc(pl.title())} ({v[1]}/{v[0]})" for pl, v in piores))
+    from telegram import InputFile
+    alvo = TESTE.get() or p["chat"]
+    from telegram import InputMediaPhoto
+    try:  # as duas imagens juntas (álbum): barras + pizzas
+        await context.bot.send_media_group(alvo, [
+            InputMediaPhoto(png, caption=limpar_texto("\n".join(leg))[:1024], parse_mode=ParseMode.HTML),
+            InputMediaPhoto(png2)])
+    except Exception as e:
+        log.warning("Relatório semanal: álbum falhou (%s); mandando separado", e)
+        await context.bot.send_photo(alvo, png, caption=limpar_texto("\n".join(leg))[:1024], parse_mode=ParseMode.HTML)
+        await context.bot.send_photo(alvo, png2)
+    nome = f"Analise Leankeep {unidade} {inicio:%d-%m} a {fim:%d-%m-%Y}.xlsx"
+    await context.bot.send_document(alvo, InputFile(xlsx, filename=nome),
+                                    caption="Planilha da semana (RESUMO com os gráficos + BASE). Abra no Excel.")
+    return True
+
+
+async def relatorio_semanal_job(context):
+    await relatorio_semanal_pedir(context)
+
+
+async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/relatorio – semana passada · /relatorio atual – esta semana · /relatorio 01/11 30/11 – período."""
+    if not _eh_gestor(update):
+        await update.effective_message.reply_text("Só o gestor pode usar este comando.")
+        return
+    if MODO != "leankeep":
+        await update.effective_message.reply_text("O relatório precisa do acesso ao Leankeep.")
+        return
+    a = context.args or []
+    h = hoje()
+    try:
+        if a and normalizar(a[0]).startswith("ATUAL"):
+            ini, fim = h - timedelta(days=h.weekday()), h
+        elif len(a) >= 2:
+            def dt(t):
+                p = [int(x) for x in t.split("/")]
+                return date(p[2] if len(p) > 2 and p[2] > 99 else (2000 + p[2] if len(p) > 2 else h.year), p[1], p[0])
+            ini, fim = dt(a[0]), dt(a[1])
+        else:
+            ini, fim = semana_anterior()
+    except Exception:
+        await update.effective_message.reply_text("Use assim: /relatorio  ·  /relatorio atual  ·  /relatorio 01/11 30/11")
+        return
+    await update.effective_message.reply_text(
+        f"⏳ Pedi ao Leankeep o relatório de {ini:%d/%m} a {fim:%d/%m}. Assim que ficar pronto "
+        f"(costuma levar poucos minutos) eu mando a imagem e a planilha aqui.")
+    await relatorio_semanal_pedir(context, ini, fim, chat=update.effective_chat.id)
+
 async def cmd_semana(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if MODO != "leankeep":
         await update.message.reply_text("O resumo semanal precisa do acesso ao Leankeep.")
@@ -4976,6 +5127,7 @@ def montar_app(token: str) -> Application:
     app.add_handler(CallbackQueryHandler(lk_botao, pattern=r"^lk\|"))
     app.add_handler(CommandHandler("auditoria", cmd_auditoria))
     app.add_handler(CommandHandler("seguimento", cmd_seguimento))
+    app.add_handler(CommandHandler("relatorio", cmd_relatorio))
     app.add_handler(CallbackQueryHandler(sg_botao, pattern=r"^sg\|"))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.PHOTO & filters.REPLY, sg_foto_privada))
     app.add_handler(CallbackQueryHandler(aud_botao, pattern=r"^au\|"))
