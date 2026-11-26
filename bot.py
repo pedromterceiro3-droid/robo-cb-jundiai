@@ -1588,8 +1588,21 @@ async def lk_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
         def rodar():
             if not LK.token:
                 LK.login()
-            return legado.registrar(LK.token, LK.refresh, (gid, nome_g), (aid, nome_a), PRIOR_COD[pr], desc, foto,
-                                    datetime.fromisoformat(o["criada"]).replace(tzinfo=None), empresa_id=LK.empresa_id)
+            args = ((gid, nome_g), (aid, nome_a), PRIOR_COD[pr], desc, foto,
+                    datetime.fromisoformat(o["criada"]).replace(tzinfo=None))
+            try:
+                return legado.registrar(LK.token, LK.refresh, *args, empresa_id=LK.empresa_id)
+            except RuntimeError as e:
+                # acesso caiu (ex.: o mesmo usuário entrou no navegador): renova e tenta UMA vez de novo.
+                # Só antes de salvar: erros do Salvar ("não salvou") não repetem, para não duplicar.
+                if not any(t in str(e) for t in ("não aceitou o acesso", "não achei o formulário", "logout")):
+                    raise
+                log.warning("Leankeep antigo: acesso caiu, renovando: %s", e)
+                try:
+                    LK.renovar()
+                except Exception:
+                    LK.login()
+                return legado.registrar(LK.token, LK.refresh, *args, empresa_id=LK.empresa_id)
         try:
             numero = await asyncio.wait_for(asyncio.to_thread(rodar), 240)
         except Exception as e:

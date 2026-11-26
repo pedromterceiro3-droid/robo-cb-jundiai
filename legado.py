@@ -145,7 +145,7 @@ class Legado:
         agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
         r = self.http.get(URL_NOVO + f"&currentDate={agora:%Y-%m-%d}&currentTime={agora:%H-%M}")
         final = str(r.url)
-        if r.status_code >= 400 or re.search(r"SignIn|/login|Reauth", final, re.I):
+        if r.status_code >= 400 or re.search(r"SignIn|/login|/logout|Reauth", final, re.I):
             raise RuntimeError(f"o Leankeep antigo não aceitou o acesso do robô (foi para {final[:80]}, {r.status_code})")
         m = re.search(r'(ctl0\d)[$_]PageContent[$_]TabContainer[$_]TabPanelAnomalia[$_]Descricao', r.text)
         if m:  # a página aberta direto (fora da janelinha) usa ctl00 em vez de ctl01
