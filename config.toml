@@ -425,14 +425,6 @@ topico = "checklists"
 botao = "Checklist de fechamento"
 prazo = "23:00"            # lembrete às 22:30 e cobrança às 23:00 (depois, só no seu privado)
 
-[[bar.rotinas]]
-id = "unitarios"
-nome = "Contagem de unitários antes da abertura (18.1)"
-nome_curto = "Contagem de unitários"
-tipo = "diaria"
-topico = "contagens"
-botao = "Unitários"
-prazo = "11:00"
 
 [[bar.rotinas]]
 id = "porcionamento_dia"
@@ -480,13 +472,35 @@ prazo = "18:00"
 
 [[bar.rotinas]]
 id = "destilados"
-nome = "Contagem semanal de destilados (18.1)"
+nome = "Contagem de destilados (18.1)"
 nome_curto = "Contagem de destilados"
 tipo = "semanal"
 topico = "contagens"
 botao = "Destilados"
-dia = "seg"
-prazo = "16:00"
+dias = ["dom", "qui"]          # bar conta domingo e quinta (Júlia e Luiz)
+prazo = "23:59"              # até meia-noite (posts feitos pouco depois ainda contam para o dia)
+
+[[bar.rotinas]]
+id = "unitarios"
+nome = "Contagem de unitários (18.1)"
+nome_curto = "Contagem de unitários"
+tipo = "semanal"
+topico = "contagens"
+botao = "Unitários"
+dias = ["dom", "qui"]          # bar conta domingo e quinta (Júlia e Luiz)
+prazo = "23:59"              # até meia-noite (posts feitos pouco depois ainda contam para o dia)
+
+[[bar.rotinas]]
+id = "recontagem_almox"
+nome = "Recontagem do Almox – revisão da contagem do bar (destilados e unitários)"
+nome_curto = "Recontagem do Almox"
+marcar = ["@carlosvinicius", "@gabriellesouza"]
+marcar_no_lembrete = true      # feita pelo Almox (no lugar dos gerentes do bar)
+tipo = "semanal"
+topico = "contagens"
+botao = "Recontagem Almox"
+dias = ["seg", "sex"]          # Almox reconta segunda e sexta
+prazo = "23:59"              # até meia-noite (posts feitos pouco depois ainda contam para o dia)
 
 [[bar.rotinas]]
 id = "limpeza"
@@ -595,4 +609,29 @@ max_cartoes = 15            # acima disso, o resto vem em lista
 #   Grupo → Área → Prioridade → confere → registra com a foto. /registrar_leankeep 12 manda de novo.
 # ------------------------------------------------------------
 [leankeep_registro]
+ativo = true
+
+# ------------------------------------------------------------
+# AUDITORIA (BATIDÃO) NO LEANKEEP – "Auditoria N" (N conta no mês, sem repetir)
+#   • Toda segunda, no seu privado: "Abrir Auditoria N?" (só se ainda não houver uma da semana)
+#   • /auditoria mostra a da semana e oferece abrir a próxima
+#   • Ao registrar uma ocorrência pelo robô, ela entra na auditoria da semana
+#     (ou abre a próxima na hora); sempre dá para registrar avulsa.
+# ------------------------------------------------------------
+[auditoria]
+ativo = true
+lembrete_semanal = true
+quando = "seg 09:30"        # dia e hora da pergunta
+dias_validade = 6           # auditoria com até 6 dias conta como "da semana"
+comentario = "Aberta pelo robô do Telegram"
+
+# ------------------------------------------------------------
+# SEGUIMENTO NO LEANKEEP (Correções › Incluir Correção)
+#   • Depois de registrar: botão [🔧 Dar seguimento] → escolhe o status → confere → grava
+#   • /seguimento (lista as pendentes)  ·  /seguimento 31  ·  /seguimento D171431
+#   • Para mudar a descrição ou mandar foto: responda a tela de conferência (texto ou foto)
+#   • Solucionada exige foto: usa a da conclusão no grupo ou a que você mandar
+#   • Ao concluir no grupo uma ocorrência que está no Leankeep, pergunta se baixa lá também
+# ------------------------------------------------------------
+[seguimento]
 ativo = true
