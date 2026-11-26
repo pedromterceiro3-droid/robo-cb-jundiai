@@ -3530,7 +3530,9 @@ async def cmd_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         f"⏳ Pedi ao Leankeep o relatório de {ini:%d/%m} a {fim:%d/%m}. Assim que ficar pronto "
         f"(costuma levar poucos minutos) eu mando a imagem e a planilha aqui.")
-    await relatorio_semanal_pedir(context, ini, fim, chat=update.effective_chat.id)
+    m = update.effective_message
+    await relatorio_semanal_pedir(context, ini, fim, chat=update.effective_chat.id,
+                                  topico=m.message_thread_id if m.is_topic_message else None)
 
 async def cmd_semana(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if MODO != "leankeep":
