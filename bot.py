@@ -3953,9 +3953,56 @@ async def cardapio_diario(context: ContextTypes.DEFAULT_TYPE, chat=None, topico_
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("📷 Ver com fotos", callback_data="cd|fotos"),
                                 InlineKeyboardButton("🔗 Abrir no GIA", url=CD.LINK_GIA)],
                                [InlineKeyboardButton("🔄 Atualizar agora", callback_data="cd|agora")]])
-    await enviar(context.bot, destino, texto_mudancas_cardapio(dif, pratos, desde), reply_markup=kb)
+    await enviar_mudancas_cardapio(context.bot, destino, topico, dif, pratos, desde, kb)
 
 
+
+
+def imagem_mudancas_cardapio(dif: dict, total_pratos: int, desde: str, quando: datetime | None = None) -> bytes:
+    """Mesmo conteúdo da mensagem, como imagem no estilo do quadro de vinhos (3 colunas)."""
+    import cardapio as CD
+    import cardapio_imagem as CI
+    q = quando or datetime.now(FUSO)
+    limite = int(card_cfg().get("max_itens_imagem", 20))
+    defs = (("saiu", "Saiu do cardápio", "Nada saiu.", "O cliente não vê mais."),
+            ("entrou", "Entrou no cardápio", "Nada entrou.", "Agora aparece para o cliente."),
+            ("preco", "Preço mudou", "Nenhum preço mudou.", ""))
+    colunas = []
+    for chave, titulo, vazio, explica in defs:
+        itens = []
+        for i in dif.get(chave, [])[:limite]:
+            sec = (i.get("categoria") or "").split(" > ")[-1]
+            if chave == "preco":
+                det = " · ".join(x for x in (sec, f"{CD.reais(i.get('preco_antes'))} → {CD.reais(i.get('preco'))}") if x)
+            else:
+                det = " · ".join(x for x in (sec, CD.reais(i.get("preco")) if i.get("preco") is not None else "") if x)
+                det = f"{det}. {explica}" if det else explica
+            itens.append({"nome": CD.nome_item(i), "codigo": i.get("codigo") or "sem código", "detalhe": det})
+        resto = len(dif.get(chave, [])) - limite
+        if resto > 0:
+            itens.append({"nome": f"+ {resto} itens", "codigo": "", "detalhe": "Veja a lista completa com /cardapio"})
+        colunas.append({"tipo": chave, "titulo": titulo, "vazio": vazio, "itens": itens})
+    rodape = (f"Comparando com a conferência de {desde} · {total_pratos} pratos e bebidas no cardápio · "
+              f"No GIA: loja 50.CB JUNDIAÍ, busque pelo código")
+    return CI.gerar(colunas, f"Cardápio Tagme CB Jundiaí: o que mudou ({q:%d/%m})", rodape)
+
+
+async def enviar_mudancas_cardapio(bot, destino, topico, dif, pratos, desde, kb, quando=None):
+    """Manda a imagem (com legenda curta e os botões); se a imagem falhar, manda o texto."""
+    if card_cfg().get("imagem", True):
+        try:
+            png = await asyncio.to_thread(imagem_mudancas_cardapio, dif, pratos, desde, quando)
+            q = quando or datetime.now(FUSO)
+            leg = (f"🍽️ <b>Cardápio da Tagme – o que mudou</b> ({q:%d/%m})\n"
+                   f"Saíram: <b>{len(dif.get('saiu', []))}</b> 🔴 · Entraram: <b>{len(dif.get('entrou', []))}</b> 🟢 · "
+                   f"Preço mudou: <b>{len(dif.get('preco', []))}</b> 🟣")
+            alvo = TESTE.get() or destino
+            await bot.send_photo(alvo, png, caption=limpar_texto(leg), parse_mode=ParseMode.HTML, reply_markup=kb,
+                                 message_thread_id=None if TESTE.get() else topico)
+            return
+        except Exception as e:
+            log.warning("Cardápio: imagem falhou, mandando texto: %s", e)
+    await enviar(bot, destino, texto_mudancas_cardapio(dif, pratos, desde), reply_markup=kb, message_thread_id=topico)
 
 async def cardapio_reenviar(context: ContextTypes.DEFAULT_TYPE, chat=None):
     """Manda de novo a última mensagem de mudanças do cardápio (mesmo destino da conferência)."""
@@ -3975,12 +4022,9 @@ async def cardapio_reenviar(context: ContextTypes.DEFAULT_TYPE, chat=None):
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("📷 Ver com fotos", callback_data="cd|fotos"),
                                 InlineKeyboardButton("🔗 Abrir no GIA", url=CD.LINK_GIA)],
                                [InlineKeyboardButton("🔄 Atualizar agora", callback_data="cd|agora")]])
-    texto = texto_mudancas_cardapio(dif, info.get("pratos", 0), info.get("desde", "?"))
-    texto = texto.replace("conferência de ?", "conferência anterior")
-    if info.get("em"):
-        em = datetime.fromisoformat(info["em"])
-        texto = texto.replace(f"({datetime.now(FUSO):%d/%m})", f"({em:%d/%m às %H:%M})", 1)
-    await enviar(context.bot, destino, texto, reply_markup=kb, message_thread_id=topico)
+    em = datetime.fromisoformat(info["em"]) if info.get("em") else None
+    await enviar_mudancas_cardapio(context.bot, destino, topico, dif, info.get("pratos", 0),
+                                   info.get("desde") or "anterior", kb, em)
 
 async def botao_cardapio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """📷 Ver com fotos: manda um cartão (foto, código, descrição, preço) para cada mudança."""
