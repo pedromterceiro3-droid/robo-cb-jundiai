@@ -3749,12 +3749,14 @@ async def vigiar_fila(context: ContextTypes.DEFAULT_TYPE):
     vistos = set(estado.get("vistos", []))
     grupos, pessoas = len(na_fila), sum(_pessoas(o) for o in na_fila)
     novos = [o for o in na_fila if _id(o) not in vistos]
+    entraram = []
     for o in sorted(novos, key=lambda x: _c(x, "position", padrao=999) or 999):
         vistos.add(_id(o))
         estado["grupos_dia"] += 1
         estado["pessoas_dia"] += _pessoas(o)
-        await tg_enviar(context.bot, texto_novo_grupo(_pessoas(o), _primeiro_nome(o),
-                                                      _c(o, "position"), grupos, pessoas))
+        entraram.append((_pessoas(o), _primeiro_nome(o), _c(o, "position")))
+    if entraram:  # todos os que entraram desde a última olhada: UMA mensagem só
+        await tg_enviar(context.bot, texto_novos_grupos(entraram, grupos, pessoas))
     if grupos == 0 and estado.get("tinha_fila") and tg_cfg().get("avisar_fila_zerada", True):
         await tg_enviar(context.bot, "✅ <b>Fila de espera zerada.</b>")
     estado["tinha_fila"] = grupos > 0
@@ -3763,6 +3765,17 @@ async def vigiar_fila(context: ContextTypes.DEFAULT_TYPE):
     estado["resumo_dia"] = {"dia": d, "grupos": estado["grupos_dia"], "pessoas": estado["pessoas_dia"],
                             "pico": estado["pico"]}
     gravar(ARQ_FILA, estado)
+
+
+def texto_novos_grupos(entraram, grupos, pessoas) -> str:
+    """Mensagem espaçada; emojis no fim da linha (no início a quebra de linha some no Telegram)."""
+    n = len(entraram)
+    L = [f"<b>{'Novo grupo' if n == 1 else f'{n} novos grupos'} na fila de espera</b> 🕒", ""]
+    for qtd, nome, pos in entraram:
+        L.append(f"• <b>{esc(nome) if nome else 'Sem nome'}</b> · {plural(qtd, 'pessoa')}"
+                 + (f" · posição {pos}" if pos not in (None, "") else ""))
+    L += ["", f"Na fila agora: <b>{plural(grupos, 'grupo')}</b> · <b>{plural(pessoas, 'pessoa')}</b> 👥"]
+    return "\n".join(L)
 
 
 def texto_novo_grupo(qtd, nome, pos, grupos, pessoas) -> str:
