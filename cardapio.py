@@ -91,7 +91,9 @@ def legenda(i: dict, tipo: str, esc) -> str:
         L.append(f"Preço: <b>{reais(i.get('preco'))}</b>")
     if i.get("descricao"):
         d = i["descricao"]
-        L += ["", esc(d[:500] + ("…" if len(d) > 500 else ""))]
+        L += ["", esc(d[:400] + ("…" if len(d) > 400 else ""))]
+    if i.get("codigo"):
+        L += ["", f"<i>No GIA: escolha a loja 50.CB JUNDIAÍ e busque {esc(i['codigo'])}</i>"]
     return "\n".join(L)
 
 

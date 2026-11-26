@@ -3261,7 +3261,8 @@ def texto_mudancas_cardapio(dif: dict, total_pratos: int, desde: str) -> str:
                 L.append(f"   {esc(sec)} · {CD.reais(i.get('preco'))}. {explica}")
         if len(itens) > 25:
             L.append(f"   … e mais {len(itens) - 25}")
-    L += ["", f"<i>Hoje o cardápio tem {total_pratos} pratos e bebidas.</i>"]
+    L += ["", f"<i>Hoje o cardápio tem {total_pratos} pratos e bebidas.</i>",
+          "<i>Para ajustar no GIA: abra, escolha a loja 50.CB JUNDIAÍ e busque pelo código.</i>"]
     return "\n".join(L)
 
 
