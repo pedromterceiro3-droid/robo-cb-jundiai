@@ -1,0 +1,674 @@
+# ============================================================
+#  CONFIGURAÇÃO DO ROBÔ DE COBRANÇA — LEANKEEP (CB Jundiaí)
+#  Edite no Bloco de Notas e reinicie o robô para valer.
+#  Grupo/tópico e gestor são configurados pelo Telegram:
+#  /configurar_topico (dentro do tópico) e /sou_gestor (no privado)
+# ============================================================
+
+fuso = "America/Sao_Paulo"
+
+# Unidade cujas atividades serão cobradas (como aparece no Leankeep)
+unidade = "CB JUNDIAÍ"
+
+# Também cobrar atividades atrasadas de dias anteriores? (0 = só as do dia)
+incluir_atrasadas_dias = 0
+
+# Resumo para o gestor. Antes das 12h = resumo do DIA ANTERIOR (inclui o fechamento da madrugada)
+resumo_diario = "07:00"
+
+# 2º aviso: quantos minutos ANTES do prazo (0 = desligado)
+aviso_antes_prazo_min = 30
+
+# Copiar cada cobrança também no privado do gestor
+copiar_cobrancas_gestor = true
+
+# Palavras que, escritas no tópico Leankeep diário, fazem o robô conferir a baixa no Leankeep
+palavras_baixa = ["baixei", "baixado", "baixada", "baixamos", "feito", "concluído", "concluída", "finalizado", "pronto", "realizado"]
+
+# Trechos removidos do fim das descrições do Leankeep (ex.: " - JUN")
+remover_sufixos = [" - JUN"]
+
+# Padrão: depois do prazo, cobra de novo a cada X minutos, até Y vezes
+# (cada cobrança pode ter o seu: reforco_intervalo_min / reforco_maximo)
+[reforco]
+intervalo_min = 30
+maximo = 2
+
+# ------------------------------------------------------------
+# COBRANÇAS — copie um bloco [[cobrancas]] para criar outra
+#   aviso / prazo: horários. Prazo menor que o aviso = passa da meia-noite
+#   palavras: trechos do nome da atividade/plano no Leankeep ([] = todas do dia)
+#   excluir:  trechos que NÃO entram nesta cobrança
+#   dias:     "seg","ter","qua","qui","sex","sab","dom"
+#   (palavras/excluir só valem quando o robô estiver ligado ao Leankeep)
+# ------------------------------------------------------------
+
+[[cobrancas]]
+nome = "Leitura de água, energia e gás"
+apelidos = ["consumo", "leitura", "agua", "energia", "luz", "gas", "pressao", "hidrometro", "medidor", "relogio de agua"]   # palavras que, ditas no grupo ("baixei o …"), indicam esta cobrança
+aviso = "09:00"
+prazo = "10:00"
+palavras = ["LEITURA"]                # inclui a leitura da pressão de gás da loja (seg e qui)
+excluir = ["QGBT", "CHECKLIST: BAR", "CHECKLIST: COZINHA"]
+dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
+privado = true
+responsaveis = []
+
+[[cobrancas]]
+nome = "Checklist de banheiros, brinquedoteca e salões"
+apelidos = ["banheiro", "brinquedoteca", "salao", "saloes", "eventos"]   # palavras que, ditas no grupo ("baixei o …"), indicam esta cobrança
+aviso = "10:00"
+prazo = "11:00"
+palavras = ["BANHEIRO", "BRINQUEDOTECA", "SALAO", "SALOES"]   # inclui o salão de eventos (seg e qui)
+excluir = ["CHECKLIST: BAR", "CHECKLIST: COZINHA"]
+dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
+privado = true
+responsaveis = []
+
+[[cobrancas]]
+nome = "Checklists da manutenção"
+apelidos = ["checklist da manutencao", "checklists da manutencao", "manutencao"]   # palavras que, ditas no grupo ("baixei o …"), indicam esta cobrança
+aviso = "16:00"
+prazo = "18:00"
+palavras = ["CHECKLIST: MANUTENCAO"]
+excluir = ["BANHEIRO", "BRINQUEDOTECA", "SALAO", "SALOES", "LEITURA", "QGBT", "EXAUST", "INSUFLA", "FECHAMENTO", "DESLIGAMENTO", "BALCOES REFRIGERADOS", "CHECKLIST: BAR", "CHECKLIST: COZINHA"]
+dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
+privado = true
+responsaveis = []
+
+[[cobrancas]]
+nome = "Checklists do bar e da cozinha (seg e qui)"
+apelidos = ["bar", "cozinha"]   # palavras que, ditas no grupo ("baixei o …"), indicam esta cobrança
+aviso = "10:00"
+prazo = "11:00"
+palavras = ["CHECKLIST: BAR", "CHECKLIST: COZINHA"]
+excluir = []
+dias = ["seg", "qui"]
+privado = true
+responsaveis = []
+
+[[cobrancas]]
+nome = "Conferência da diretoria"
+apelidos = ["diretoria"]   # palavras que, ditas no grupo ("baixei o …"), indicam esta cobrança
+aviso = "18:30"            # uma mensagem só, às 18:30, no SEU privado (não vai para o grupo)
+prazo = "23:59"
+palavras = ["CONFERENCIA DA DIRETORIA"]
+excluir = []
+dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
+so_gestor = true
+privado = false
+responsaveis = []
+reforco_maximo = 0
+aviso_antes_prazo_min = 0
+avisar_baixa_atrasada = false
+
+[[cobrancas]]
+nome = "Leitura do QGBT (domingo)"
+apelidos = ["qgbt", "fases", "quadro geral"]   # palavras que, ditas no grupo ("baixei o …"), indicam esta cobrança
+aviso = "13:00"
+prazo = "14:00"
+palavras = ["QGBT"]
+excluir = []
+dias = ["dom"]
+privado = true
+responsaveis = []
+
+[[cobrancas]]
+nome = "Fechamento: exaustão/insuflamento, loja e registro de gás"
+apelidos = ["fechamento", "exaust", "insufla", "registro", "desligamento", "balcoes", "fechar a loja"]   # palavras que, ditas no grupo ("baixei o …"), indicam esta cobrança
+aviso = "23:30"
+prazo = "02:00"            # madrugada do dia seguinte
+palavras = ["EXAUST", "INSUFLA", "FECHAMENTO", "DESLIGAMENTO", "BALCOES REFRIGERADOS"]
+excluir = []
+dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
+privado = true
+responsaveis = []
+reforco_maximo = 0         # só cobra uma vez às 02:00 (sem reforços de madrugada)
+avisar_baixa_atrasada = false   # fechamento costuma ser baixado depois do horário
+
+# ------------------------------------------------------------
+# OCORRÊNCIAS — fotos/mensagens do tópico de ocorrências viram pendências
+#   Configure o tópico enviando /configurar_ocorrencias DENTRO dele.
+# ------------------------------------------------------------
+[ocorrencias]
+ativo = true
+lista_horario = "07:00"          # lista de pendências (tópico + privado do gestor)
+confirmar_registro = true        # robô responde "📌 Ocorrência #N registrada" com botão
+min_caracteres_texto = 15        # mensagem só de texto menor que isso não vira ocorrência
+juntar_segundos = 120            # foto + texto da mesma pessoa em até 2 min = 1 ocorrência
+# Solução: mensagem com estas palavras (vale a raiz) ou com ✅ NÃO abre ocorrência; respondendo à foto
+# de uma ocorrência, conclui. Ex.: "Trocado ✅", "consertada", "resolvido".
+palavras_resolvido = ["resolvid", "concluid", "finalizad", "trocad", "consertad", "concertad", "arrumad", "reparad",
+                      "substituid", "instalad", "regulad", "fixad", "desentupid", "ajustad", "pintad", "corrigid",
+                      "ajeitad", "apertad", "vedad", "pregad", "colad", "mudad", "nivelad", "soldad", "lubrificad", "calibrad", "rejuntad", "normalizad", "voltou a funcionar", "já está funcionando",
+                      "ja esta funcionando", "funcionando normal"]
+emojis_resolvido = ["✅", "✔", "☑"]
+palavras_andamento = ["em andamento", "andamento", "verificando", "vou verificar", "estou vendo"]
+avisar_baixa_privado = true      # cada baixa chega no privado do gestor (foto, quem baixou, data) com botão Reativar
+apagar_ao_concluir = true        # concluída: apaga do grupo as mensagens do robô sobre ela (o backup fica no privado)
+# Palavras-chave (vale a raiz: "quebr" pega quebra, quebrou, quebrado; maiúsculas e acentos não importam)
+#   palavras_abrem     → a mensagem/foto vira ocorrência na hora
+#   palavras_perguntam → o robô pergunta "isso é uma ocorrência?" com botão Sim / Não
+#   sem nenhuma delas  → é só conversa, não vira ocorrência
+# Foto mandada sem texto + texto com a palavra em até 2 min (mesma pessoa) = uma ocorrência com foto.
+exigir_palavra_chave = true
+perguntar_toda_foto = true      # foto sem palavra-chave: robô pergunta [📌 Abrir ocorrência] [✅ Conclusão] [Não é ocorrência]
+# --- abrem ocorrência na hora (defeito claro) ---
+palavras_abrem = [
+  "ocorrência", "manutenção", "danific", "avariad", "quebr", "estrag", "defeit", "pifou", "pifad",
+  "vaza", "pingando", "goteja", "gotejando", "escorrendo", "infiltr", "goteir", "umidade", "alagad", "empoçad",
+  "transbord", "entup", "desentup", "queim", "curto circuito", "choque", "faísca", "faiscando", "piscando",
+  "cheiro de gás", "consert", "concert", "fixar", "fixa ", "solt", "frouxo", "frouxa", "folga", "bamb",
+  "balançando", "torto", "torta", "caiu", "caindo", "caído", "caída", "despencad", "descolad", "despregad",
+  "desencaixad", "saiu do lugar", "rachad", "trincad", "furad", "rasgad", "lascad", "amassad", "estourad",
+  "rompid", "enferruj", "oxidad", "mofo", "descascand", "afundad", "desnivelad", "emperr", "travad", "travando",
+  "agarrand", "desarm", "desregulad", "barulho", "ruído", "vibrando",
+  "não funciona", "não está funcionando", "parou de funcionar", "sem funcionar", "não liga", "não está ligando",
+  "não acende", "não esquenta", "não aquece", "não gela", "não resfria", "não congela", "não puxa", "não fecha",
+  "não abre", "não tranca", "não desliga", "sem água", "sem luz", "sem energia", "sem gás", "sem pressão",
+  "com problema", "dando problema",
+  # pedidos de serviço (verbos e derivados; "consertado/fixado/ajustado…" contam como solução, vêm antes)
+  "fixe", "fixem", "fixação", "fixacao", "colar", "cole", "colem", "colagem", "ajust", "repar", "trocar", "troque", "troquem", "arrumar", "arrume", "arrumem", "pint",
+  "instal", "regular", "regule", "substitu", "desentupir", "apertar", "aperte", "vedar", "vede", "soldar",
+  "solda", "nivelar", "lubrificar", "calibrar", "rebocar", "reboco", "rejunt", "impermeabiliz", "dedetiz"]
+# --- o robô pergunta "do que se trata?" (pode ou não ser manutenção) ---
+palavras_perguntam = [
+  "verific", "avali", "revis", "checar", "olhada", "ver isso", "pode ver", "podem ver",
+  "repor", "faltando", "colocar", "mudar", "mude", "mudem", "mudança", "mudanca", "parou", "parad", "precisa", "conseguem", "consegue",
+  "lâmpada", "ralo", "barata", "rato", "inseto", "praga", "cupim", "formiga"]
+# Abrir na mão: responda (marque) a foto/mensagem escrevendo "abrir ocorrência", "isso é ocorrência"…
+# Vira ocorrência mesmo sem palavra-chave. "Não é ocorrência" não abre.
+frases_abrir = ["ocorr", "abrir chamado", "abre chamado", "abrir os", "abre os"]
+
+# ------------------------------------------------------------
+# RESUMO SEMANAL (privado do gestor) — baixas no prazo x em atraso
+#   Peça a qualquer momento: /semana (semana passada) ou /semana atual
+# ------------------------------------------------------------
+# ------------------------------------------------------------
+# RELATÓRIO SEMANAL DE ATIVIDADES (o mesmo da PLANILHA ANÁLISE - DIRETORES)
+#   Toda segunda o robô pede ao Leankeep o "Relatório de atividades" (Excel) da semana anterior,
+#   espera ficar pronto, monta a planilha (RESUMO com os 4 gráficos + BASE) e uma imagem-resumo,
+#   e manda no seu privado. Na hora: /relatorio · /relatorio atual · /relatorio 01/11 30/11
+# ------------------------------------------------------------
+[relatorio_semanal]
+ativo = true
+quando = "seg 07:30"
+unidade = "CB JUNDIAÍ"
+unidade_id = 57896
+login = "pedro.nsf"          # usuário do Leankeep usado pelo robô (o relatório fica em "Relatórios gerados" dele)
+usuario_id = 84106
+# Fechamentos feitos depois que a loja fecha: só contam como ATRASO se a baixa passar
+# deste horário do dia seguinte (compara com o nome do PLANO no Leankeep)
+prazo_madrugada = ["FECHAMENTO DA LOJA", "REGISTRO GAS", "EXAUST"]
+limite_madrugada = "03:00"
+enviar_no_grupo = true       # as imagens também vão no tópico Leankeep diário (grupo da manutenção)
+planilha_por_email = true    # a planilha vai só por email (EMAIL_USUARIO/EMAIL_SENHA/EMAIL_PARA no ROBO_ENV)
+dias_atualizado = 7          # botão "🔄 Relatório atualizado": últimos 7 dias até agora
+
+[resumo_semanal]
+ativo = true
+quando = "seg 08:00"             # dia e hora do envio (resume a semana anterior, seg a dom)
+meta_atraso_pct = 5              # até 5% de atraso = 🟢
+alerta_atraso_pct = 15           # até 15% = 🟡 ; acima = 🔴
+fora_do_indice = ["FECHAMENTO DA LOJA"]   # aparece à parte, não conta no % de atraso
+
+# Tolerância depois do horário limite: baixa até X horas depois conta como OK
+# (compara com o nome do PLANO no Leankeep, igual à planilha de análise)
+[[resumo_semanal.tolerancias]]
+palavras = ["REGISTRO GAS", "REGISTRO DE GAS"]   # fechamento do registro de gás
+horas = 3
+
+[[resumo_semanal.tolerancias]]
+palavras = ["EXAUST"]                           # desligamento da exaustão e insuflamento
+horas = 3
+
+[[resumo_semanal.tolerancias]]
+palavras = ["FECHAMENTO DA LOJA"]               # fechamento da loja (prazo 23:59 → até ~03h)
+horas = 3
+
+# ------------------------------------------------------------
+# LEMBRETE DIÁRIO NO GRUPO DE FECHAMENTO — conferir data/hora dos relógios
+#   Configure enviando /configurar_fechamento DENTRO do grupo de fechamento.
+# ------------------------------------------------------------
+[lembrete_relogio]
+ativo = true
+horario = "23:00"
+
+# ------------------------------------------------------------
+# TAGME — fila de espera e reservas (grupo "Bot - Diretoria", tópico "Bot da Tagme")
+#   Login: TAGME_EMAIL e TAGME_SENHA no arquivo .env
+#   Configure o destino enviando /configurar_tagme DENTRO do tópico.
+# ------------------------------------------------------------
+[tagme]
+ativo = true
+venue_id = "1f1a2df6-d738-6510-844a-461e7b222271"   # Coco Bambu Jundiaí
+intervalo_fila_seg = 60          # de quanto em quanto tempo olha a fila
+avisar_fila_zerada = true
+status_na_fila = ["waiting", "notified"]   # situações que contam como "na fila"
+resumo_reservas = "10:00"        # horário do resumo diário
+resumo_modo = "hoje_e_amanha"    # duas mensagens: reservas de HOJE e, separada, as de AMANHÃ ("amanha" = só amanhã)
+
+[tagme.periodos]
+# Almoço até 17h; Jantar a partir das 17h (sem happy hour).
+# Para voltar a ter happy hour, ponha o jantar_inicio depois do happy_hour_inicio (ex.: "20:00").
+happy_hour_inicio = "17:00"
+jantar_inicio = "17:00"
+
+# ------------------------------------------------------------
+# LEMBRETES PERSONALIZADOS — copie um bloco [[lembretes]] para criar outro
+#   texto:   o que aparece em destaque (do jeito que você escrever)
+#   horario: "HH:MM"
+#   dias:    "seg","ter","qua","qui","sex","sab","dom"
+#   marcar:  @usuários do Telegram (eles recebem notificação). Quem não tem @ pode ser
+#            colocado pelo nome (ex.: "Gabrielle") — funciona se a pessoa já escreveu em algum grupo do robô
+#   conferir: nome de uma cobrança acima: o robô consulta o Leankeep e SÓ manda o lembrete
+#             se ainda houver pendência (e lista o que falta). Sem "conferir", sai sempre.
+#   onde:    "leankeep" (tópico Leankeep diário), "ocorrencias", "fechamento", "tagme" ou "gestor"
+#   ativo:   false para pausar sem apagar
+#   Veja os cadastrados com /lembretes no Telegram.
+# ------------------------------------------------------------
+[[lembretes]]
+texto = "FAZER LEITURA DE ÁGUA, ENERGIA E GÁS ATÉ AS 10h"
+horario = "09:30"
+dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
+conferir = "Leitura de água, energia e gás"
+marcar = ["@Carlosh0512", "Gabrielle", "@WilmenOsorio", "@Rhayrodriguez", "@Glaubergois", "@Rinaldo_santana"]
+onde = "leankeep"
+ativo = true
+
+[[lembretes]]
+texto = "FAZER CHECKLIST DE BANHEIROS, BRINQUEDOTECA E SALÕES ATÉ AS 11h"
+horario = "10:30"
+dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
+conferir = "Checklist de banheiros, brinquedoteca e salões"
+marcar = ["@Carlosh0512", "Gabrielle", "@WilmenOsorio", "@Rhayrodriguez", "@Glaubergois", "@Rinaldo_santana"]
+onde = "leankeep"
+ativo = true
+
+[[lembretes]]
+texto = "FAZER CHECKLISTS DA MANUTENÇÃO ATÉ AS 18h"
+horario = "17:30"
+dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
+conferir = "Checklists da manutenção"
+marcar = ["@Carlosh0512", "Gabrielle", "@WilmenOsorio", "@Rhayrodriguez", "@Glaubergois", "@Rinaldo_santana"]
+onde = "leankeep"
+ativo = true
+
+[[lembretes]]
+texto = "FAZER CHECKLIST DO BAR E DA COZINHA ATÉ AS 11h"
+horario = "10:30"
+dias = ["seg", "qui"]
+conferir = "Checklists do bar e da cozinha (seg e qui)"
+marcar = ["@Carlosh0512", "Gabrielle", "@WilmenOsorio", "@Rhayrodriguez", "@Glaubergois", "@Rinaldo_santana"]
+onde = "leankeep"
+ativo = true
+
+[[lembretes]]
+texto = "FAZER LEITURA DO QGBT ATÉ AS 14h"
+horario = "13:00"
+dias = ["dom"]
+conferir = "Leitura do QGBT (domingo)"
+marcar = ["@Carlosh0512", "Gabrielle", "@WilmenOsorio", "@Rhayrodriguez", "@Glaubergois", "@Rinaldo_santana"]
+onde = "leankeep"
+ativo = true
+
+# ------------------------------------------------------------
+# ALERTAS (/alerta no privado do robô)
+#   Toque num alerta pronto (ou escreva o seu) e escolha o tópico de destino.
+#   marcar: quem é marcado em todos os alertas (um alerta pronto pode ter o seu próprio "marcar")
+#   Para criar um alerta pronto, copie um bloco [[alertas.prontos]] e troque o texto.
+#   detalhe (opcional): texto menor que aparece embaixo do título.
+# ------------------------------------------------------------
+[alertas]
+marcar = ["@Carlosh0512", "Gabrielle", "@WilmenOsorio", "@Rhayrodriguez", "@Glaubergois", "@Rinaldo_santana"]
+
+[[alertas.prontos]]
+texto = "VERIFICAR O LEANKEEP AGORA"
+
+[[alertas.prontos]]
+texto = "CHECKLISTS ATRASADOS - BAIXAR NO LEANKEEP"
+
+[[alertas.prontos]]
+texto = "CONFERIR OS RELÓGIOS DO FECHAMENTO"
+
+[[alertas.prontos]]
+texto = "ATUALIZAR AS OCORRÊNCIAS PENDENTES"
+detalhe = "Marquem 🟡 Em andamento ou ✅ Concluído no tópico Keepbot."
+
+[[alertas.prontos]]
+texto = "REUNIÃO DA MANUTENÇÃO EM 15 MINUTOS"
+
+
+# ------------------------------------------------------------
+# GITHUB: em cada rodada, o robô fica ouvindo por alguns segundos para
+#   responder na hora quem está tocando nos botões (0 = desliga)
+# ------------------------------------------------------------
+[github]
+escuta_segundos = 90
+
+# ------------------------------------------------------------
+# AVISOS NO PRIVADO DO GESTOR
+#   mencoes: quando alguém marcar o seu @ num grupo onde o robô está, ele manda a mensagem no seu privado
+#   meu_usuario: o seu @ (o robô também descobre sozinho quando você fala com ele)
+# ------------------------------------------------------------
+[avisos]
+mencoes = true
+meu_usuario = ""
+
+# ------------------------------------------------------------
+# AGRADECER A EQUIPE NO TÓPICO LEANKEEP DIÁRIO
+#   Foto ou "baixei/feito" no tópico: o robô reage (vibra) e responde com um obrigado,
+#   dizendo a tarefa quando dá para saber (cobrança em andamento ou citada na legenda).
+# ------------------------------------------------------------
+[leankeep_agradecer]
+ativo = true
+reacao = "👏"                  # reação na foto/mensagem (vale: 👍 ❤ 🔥 🎉 🙏 👏 🏆 💯 …)
+mensagem = true                # além da reação, responde com um obrigado
+intervalo_min = 15             # não repete o obrigado para a mesma pessoa/tarefa dentro desse tempo
+
+# ------------------------------------------------------------
+# BAIXA DECLARADA PELA EQUIPE (o site do Leankeep demora a atualizar)
+#   Quando alguém toca "✅ Baixa realizada", escreve "baixei" ou posta FOTO no tópico Leankeep
+#   durante uma cobrança, o robô para de cobrar aquela tarefa no grupo naquele dia.
+#   Depois ele confere sozinho no Leankeep. Se mesmo assim continuar pendente,
+#   avisa SÓ você, no privado.
+# ------------------------------------------------------------
+[baixa_declarada]
+ativo = true
+foto_conta = true              # foto postada no tópico durante a cobrança vale como "baixei"
+conferir_apos_min = 60         # começa a conferir no Leankeep depois de 1h
+avisar_gestor_apos_min = 240   # se depois de 4h ainda estiver pendente, avisa você no privado
+
+# ------------------------------------------------------------
+# BAR – grupo "CB Jundiaí - Bar" (Guide de Procedimentos Bar V7)
+#   Configure cada tópico mandando, DENTRO dele: /topico_bar CHAVE  (chaves abaixo, em nomes_topicos)
+#   A evidência é a postagem no tópico (foto, arquivo ou texto com 40+ letras).
+#   Em tópico com mais de uma rotina, o robô pergunta com botões o que foi postado.
+#   /bar no privado = situação de tudo; /farol = publica o farol no General.
+# ------------------------------------------------------------
+[bar]
+ativo = true
+marcar = ["@juliaRafaela", "@luizFelipe"]
+silencio = ["01:30", "09:00"]      # nada é enviado nesse intervalo; o que cair nele sai às 09:00
+resumo_noite = "01:20"             # resumo das rotinas diárias no seu privado
+min_caracteres_texto = 40          # texto (sem foto) com menos que isso não conta como entrega
+cobrar_grupo_uma_vez = true        # cobra 1 vez no grupo; as cobranças seguintes vão só para o seu privado
+lembrete_no_grupo = true           # lembrete antes do prazo (⏰, sem marcar ninguém) também sai no grupo
+agradecer = true                   # a cada entrega: reação na foto + mensagem de agradecimento respondendo a ela
+reacao = "🙏"                      # reação usada (vale: 👍 ❤ 🔥 🎉 🙏 👏 🏆 💯 …)
+
+[bar.farol]
+ativo = true
+dias = ["seg"]                     # toda segunda
+horario = "10:00"
+reforco_a_partir_do_dia = 25
+dias_reforco = ["qui"]             # e também às quintas, a partir do dia 25
+horario_fechamento = "20:00"       # no último dia do mês
+
+[bar.nomes_topicos]
+general = "General"
+relatorios = "Relatórios"
+desperdicio = "Desperdício do bar"
+producao = "Itens produção"
+treinamentos = "Treinamentos e provas"
+porcionamento = "Auditoria de porcionamentos"
+checklists = "Checklists"
+contagens = "Contagens"
+reunioes = "Reuniões e atas"
+limpeza = "Limpeza e controles"
+
+# ---- diárias (prazo de madrugada conta para o dia anterior) ----
+[[bar.rotinas]]
+id = "relatorio"
+nome = "Relatório diário do chefe/subchefe (4.4)"
+nome_curto = "Relatório diário"
+tipo = "diaria"
+topico = "relatorios"
+prazo = "01:00"
+
+[[bar.rotinas]]
+id = "desperdicio"
+nome = "Desperdício do bar pesado e registrado (9.1–9.3)"
+nome_curto = "Desperdício"
+tipo = "diaria"
+topico = "desperdicio"
+prazo = "01:00"
+palavra_obrigatoria = "chopp"
+
+[[bar.rotinas]]
+id = "producao"
+nome = "Itens de produção do dia"
+nome_curto = "Itens produção"
+tipo = "diaria"
+topico = "producao"
+prazo = "23:30"
+
+[[bar.rotinas]]
+id = "checklist_abertura"
+nome = "Checklist de abertura (feito no app) postado no grupo (6.1)"
+nome_curto = "Checklist abertura"
+tipo = "diaria"
+topico = "checklists"
+botao = "Checklist de abertura"
+prazo = "23:00"            # lembrete às 22:30 e cobrança às 23:00 (depois, só no seu privado)
+
+[[bar.rotinas]]
+id = "checklist_fechamento"
+nome = "Checklist de fechamento (feito no app) postado no grupo (6.1)"
+nome_curto = "Checklist fechamento"
+tipo = "diaria"
+topico = "checklists"
+botao = "Checklist de fechamento"
+prazo = "23:00"            # lembrete às 22:30 e cobrança às 23:00 (depois, só no seu privado)
+
+
+[[bar.rotinas]]
+id = "porcionamento_dia"
+ativo = false              # desligada: a auditoria de porções passou a ser cobrada 1x por semana (consolidada)
+nome = "Auditoria de porcionamento do dia (11.1)"
+nome_curto = "Porcionamento do dia"
+tipo = "diaria"
+topico = "porcionamento"
+botao = "Porcionamento do dia"
+prazo = "18:00"
+
+[[bar.rotinas]]
+id = "flv"
+nome = "Planilha de higienização de hortifruti (11.3)"
+nome_curto = "Higienização FLV"
+marcar = ["@AnaCarolinaMtz", "Sanla Torres"]
+marcar_no_lembrete = true   # time da nutrição (no lugar dos gerentes do bar)
+tipo = "diaria"
+topico = "limpeza"
+botao = "Higienização FLV"
+prazo = "14:00"
+
+# ---- semanais (dia = dia do prazo) ----
+[[bar.rotinas]]
+id = "reuniao_semanal"
+nome = "Reunião semanal com a equipe do bar (2.2)"
+nome_curto = "Reunião semanal"
+tipo = "semanal"
+topico = "reunioes"
+botao = "Reunião semanal"
+dia = "sab"
+prazo = "23:59"
+
+[[bar.rotinas]]
+id = "porcionamento_semana"
+nome = "Auditoria de porcionamentos (11.1)"
+nome_curto = "Auditoria de porções"
+marcar = ["@AnaCarolinaMtz", "Sanla Torres"]
+marcar_no_lembrete = true   # feita pela nutrição (no lugar dos gerentes do bar)
+tipo = "semanal"
+topico = "porcionamento"
+botao = "Auditoria de porções"
+dias = ["seg", "qua", "sex"]   # combinado com a nutrição: cobrada segunda, quarta e sexta
+prazo = "18:00"
+
+[[bar.rotinas]]
+id = "destilados"
+nome = "Contagem de destilados (18.1)"
+nome_curto = "Contagem de destilados"
+tipo = "semanal"
+topico = "contagens"
+botao = "Destilados"
+dias = ["dom", "qui"]          # bar conta domingo e quinta (Júlia e Luiz)
+prazo = "23:59"              # até meia-noite (posts feitos pouco depois ainda contam para o dia)
+
+[[bar.rotinas]]
+id = "unitarios"
+nome = "Contagem de unitários (18.1)"
+nome_curto = "Contagem de unitários"
+tipo = "semanal"
+topico = "contagens"
+botao = "Unitários"
+dias = ["dom", "qui"]          # bar conta domingo e quinta (Júlia e Luiz)
+prazo = "23:59"              # até meia-noite (posts feitos pouco depois ainda contam para o dia)
+
+[[bar.rotinas]]
+id = "recontagem_almox"
+nome = "Recontagem do Almox – revisão da contagem do bar (destilados e unitários)"
+nome_curto = "Recontagem do Almox"
+marcar = ["@carlosvinicius", "@gabriellesouza"]
+marcar_no_lembrete = true      # feita pelo Almox (no lugar dos gerentes do bar)
+tipo = "semanal"
+topico = "contagens"
+botao = "Recontagem Almox"
+dias = ["seg", "sex"]          # Almox reconta segunda e sexta
+prazo = "23:59"              # até meia-noite (posts feitos pouco depois ainda contam para o dia)
+
+[[bar.rotinas]]
+id = "limpeza"
+nome = "Cronograma de limpeza semanal com fotos (16.7)"
+nome_curto = "Cronograma de limpeza"
+tipo = "semanal"
+topico = "limpeza"
+botao = "Limpeza"
+dia = "qua"
+prazo = "16:00"
+
+# ---- mensais (meta = quantas entregas no mês) ----
+[[bar.rotinas]]
+id = "treinamento"
+nome = "Treinamento com 60% da equipe (2.1)"
+nome_curto = "Treinamentos (60% da equipe)"
+tipo = "mensal"
+topico = "treinamentos"
+botao = "Treinamento"
+meta = 2
+
+[[bar.rotinas]]
+id = "prova"
+nome = "Prova após os treinamentos (3.3)"
+nome_curto = "Provas dos treinamentos"
+tipo = "mensal"
+topico = "treinamentos"
+botao = "Prova"
+meta = 2
+
+[[bar.rotinas]]
+id = "boas_praticas"
+nome = "Treinamento de boas práticas com a Nutrição (2.4)"
+nome_curto = "Treinamento de boas práticas"
+tipo = "mensal"
+topico = "treinamentos"
+botao = "Boas práticas"
+meta = 1
+
+[[bar.rotinas]]
+id = "reuniao_nutricao"
+nome = "Reunião com a Nutrição, com o diretor (2.5)"
+nome_curto = "Reunião com a Nutrição"
+tipo = "mensal"
+topico = "reunioes"
+botao = "Reunião com a Nutrição"
+meta = 1
+
+[[bar.rotinas]]
+id = "reuniao_mensal"
+nome = "Reunião mensal diretor e gerente de bar (2.3)"
+nome_curto = "Reunião mensal com o gerente"
+tipo = "mensal"
+topico = "reunioes"
+botao = "Reunião mensal"
+meta = 1
+
+# ---- quinzenal ----
+[[bar.rotinas]]
+id = "pvps"
+nome = "Controle de PVPS (10.5)"
+nome_curto = "PVPS"
+tipo = "quinzenal"
+topico = "limpeza"
+botao = "PVPS"
+
+# ---- só do diretor (lembrete no seu privado, botão Feito) ----
+[[bar.rotinas]]
+id = "feedback_equipe"
+nome = "Feedback individual do chefe para a equipe (3.1)"
+nome_curto = "Feedback da equipe"
+tipo = "diretor"
+topico = "privado"
+frequencia = "mensal"
+
+[[bar.rotinas]]
+id = "revisao_docs"
+nome = "Revisão dos documentos da auditoria (1.1)"
+nome_curto = "Revisão de documentos"
+tipo = "diretor"
+topico = "privado"
+frequencia = "quinzenal"
+
+[[bar.rotinas]]
+id = "feedback_gerente"
+nome = "Feedback do gerente para a chefia (3.2)"
+nome_curto = "Feedback da chefia"
+tipo = "diretor"
+topico = "privado"
+frequencia = "semestral"
+
+# ------------------------------------------------------------
+# CARDÁPIO TAGME (cocobambu.tagme.menu) — o que entrou, saiu ou mudou de preço
+#   Todo dia no privado do gestor, com foto, código e descrição de cada item. Só leitura.
+#   Comandos: /cardapio (compara agora) · /cardapio_item 5099 (ou parte do nome)
+# ------------------------------------------------------------
+[cardapio]
+ativo = true
+horarios = ["10:00"]           # todo dia; a mensagem tem o botão 🔄 Atualizar agora para conferir na hora
+store_id = 1217             # código da CB Jundiaí no cardápio da Tagme
+max_cartoes = 15            # acima disso, o resto vem em lista
+imagem = true               # manda o "o que mudou" como imagem (3 colunas); false = só texto
+
+# ------------------------------------------------------------
+# REGISTRAR OCORRÊNCIA NO LEANKEEP (pelo Telegram, no privado do gestor)
+#   Cada ocorrência nova chega no seu privado com [📤 Registrar no Leankeep].
+#   Grupo → Área → Prioridade → confere → registra com a foto. /registrar_leankeep 12 manda de novo.
+# ------------------------------------------------------------
+[leankeep_registro]
+ativo = true
+
+# ------------------------------------------------------------
+# AUDITORIA (BATIDÃO) NO LEANKEEP – "Auditoria N" (N conta no mês, sem repetir)
+#   • Toda segunda, no seu privado: "Abrir Auditoria N?" (só se ainda não houver uma da semana)
+#   • /auditoria mostra a da semana e oferece abrir a próxima
+#   • Ao registrar uma ocorrência pelo robô, ela entra na auditoria da semana
+#     (ou abre a próxima na hora); sempre dá para registrar avulsa.
+# ------------------------------------------------------------
+[auditoria]
+ativo = true
+lembrete_semanal = true
+quando = "seg 09:30"        # dia e hora da pergunta
+dias_validade = 6           # auditoria com até 6 dias conta como "da semana"
+comentario = "Aberta pelo robô do Telegram"
+
+# ------------------------------------------------------------
+# SEGUIMENTO NO LEANKEEP (Correções › Incluir Correção)
+#   • Depois de registrar: botão [🔧 Dar seguimento] → escolhe o status → confere → grava
+#   • /seguimento (lista as pendentes)  ·  /seguimento 31  ·  /seguimento D171431
+#   • Para mudar a descrição ou mandar foto: responda a tela de conferência (texto ou foto)
+#   • Solucionada exige foto: usa a da conclusão no grupo ou a que você mandar
+#   • Ao concluir no grupo uma ocorrência que está no Leankeep, pergunta se baixa lá também
+# ------------------------------------------------------------
+[seguimento]
+ativo = true

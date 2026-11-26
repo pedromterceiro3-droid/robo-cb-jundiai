@@ -201,6 +201,9 @@ usuario_id = 84106
 # deste horário do dia seguinte (compara com o nome do PLANO no Leankeep)
 prazo_madrugada = ["FECHAMENTO DA LOJA", "REGISTRO GAS", "EXAUST"]
 limite_madrugada = "03:00"
+enviar_no_grupo = true       # as imagens também vão no tópico Leankeep diário (grupo da manutenção)
+planilha_por_email = true    # a planilha vai só por email (EMAIL_USUARIO/EMAIL_SENHA/EMAIL_PARA no ROBO_ENV)
+dias_atualizado = 7          # botão "🔄 Relatório atualizado": últimos 7 dias até agora
 
 [resumo_semanal]
 ativo = true

@@ -565,3 +565,43 @@ def imagem_pizza(res: dict, inicio: date, fim: date, unidade: str) -> bytes:
     buf = io.BytesIO()
     img.save(buf, "PNG", optimize=True)
     return buf.getvalue()
+
+
+def so_vencidas(linhas: list[dict], agora: datetime) -> list[dict]:
+    """Período que inclui hoje: tira o que ainda está no prazo (não feito, mas o horário ainda não chegou)."""
+    agora = agora.replace(tzinfo=None)
+    out = []
+    for l in linhas:
+        dp, hp, dr = _data(l.get("data_prev")), _hora(l.get("hora_prev")), _data(l.get("data_real"))
+        if not dr and dp:
+            limite = (datetime.combine(dp + timedelta(days=1), MADRUGADA["ate"]) if de_madrugada(l.get("plano"))
+                      else datetime.combine(dp, hp or time(23, 59)))
+            if limite > agora:
+                continue
+        out.append(l)
+    return out
+
+
+def enviar_email(xlsx: bytes, nome: str, assunto: str, corpo: str, cfg_env: dict) -> str:
+    """Manda a planilha por email (SMTP). cfg_env: EMAIL_USUARIO, EMAIL_SENHA, EMAIL_PARA, EMAIL_SMTP."""
+    import smtplib
+    from email.message import EmailMessage
+    msg = EmailMessage()
+    msg["From"] = cfg_env["EMAIL_USUARIO"]
+    msg["To"] = cfg_env["EMAIL_PARA"]
+    msg["Subject"] = assunto
+    msg.set_content(corpo)
+    msg.add_attachment(xlsx, maintype="application",
+                       subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=nome)
+    host = cfg_env.get("EMAIL_SMTP") or "smtp.gmail.com"
+    porta = int(cfg_env.get("EMAIL_PORTA") or 465)
+    if porta == 465:
+        with smtplib.SMTP_SSL(host, porta, timeout=60) as s:
+            s.login(cfg_env["EMAIL_USUARIO"], cfg_env["EMAIL_SENHA"])
+            s.send_message(msg)
+    else:
+        with smtplib.SMTP(host, porta, timeout=60) as s:
+            s.starttls()
+            s.login(cfg_env["EMAIL_USUARIO"], cfg_env["EMAIL_SENHA"])
+            s.send_message(msg)
+    return cfg_env["EMAIL_PARA"]

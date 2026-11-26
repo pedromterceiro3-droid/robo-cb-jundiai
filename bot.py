@@ -3319,12 +3319,28 @@ def rel_sem_cfg() -> dict:
     return CFG.get("relatorio_semanal", {}) or {}
 
 
-async def relatorio_semanal_pedir(context, inicio: date | None = None, fim: date | None = None, chat=None):
+def _rel_destinos(chat=None, topico=None) -> list:
+    """Para onde vão as imagens: quem pediu (botão/comando) ou, no envio de segunda, privado + Leankeep diário."""
+    if chat:
+        return [[chat, topico]]
+    dest = [[CFG.get("gestor_chat_id"), None]]
+    if rel_sem_cfg().get("enviar_no_grupo", True) and CFG.get("grupo_chat_id"):
+        dest.append([CFG["grupo_chat_id"], CFG.get("topico_id") or None])
+    return [x for x in dest if x[0]]
+
+
+def _email_cfg() -> dict | None:
+    e = {k: (os.getenv(k) or "").strip() for k in ("EMAIL_USUARIO", "EMAIL_SENHA", "EMAIL_PARA", "EMAIL_SMTP", "EMAIL_PORTA")}
+    return e if e["EMAIL_USUARIO"] and e["EMAIL_SENHA"] and e["EMAIL_PARA"] else None
+
+
+async def relatorio_semanal_pedir(context, inicio: date | None = None, fim: date | None = None, chat=None,
+                                  topico=None, atualizado: bool = False):
     import relatorio_semanal as RS
     if MODO != "leankeep":
         return
     c = rel_sem_cfg()
-    destino = chat or CFG.get("gestor_chat_id")
+    destinos = _rel_destinos(chat, topico)
     if not (inicio and fim):
         inicio, fim = semana_anterior()
     try:
@@ -3332,18 +3348,24 @@ async def relatorio_semanal_pedir(context, inicio: date | None = None, fim: date
             RS.pedir, LK, inicio, fim, c.get("login", "pedro.nsf"), int(c.get("unidade_id", 57896))), 120)
     except Exception as e:
         log.exception("Relatório semanal: pedido falhou")
-        await enviar(context.bot, destino, f"⚠️ Não consegui pedir o relatório de atividades ao Leankeep.\n"
-                                           f"<i>{esc(str(e)[:250])}</i>")
+        await enviar(context.bot, CFG.get("gestor_chat_id"), f"⚠️ Não consegui pedir o relatório de atividades ao Leankeep.\n"
+                                                             f"<i>{esc(str(e)[:250])}</i>")
         return
     d = ler(ARQ_REL, {})
-    d["pendente"] = {"id": rid, "inicio": inicio.isoformat(), "fim": fim.isoformat(), "chat": destino,
-                     "pedido_em": datetime.now(FUSO).isoformat(timespec="seconds")}
+    d["pendente"] = {"id": rid, "inicio": inicio.isoformat(), "fim": fim.isoformat(), "destinos": destinos,
+                     "atualizado": atualizado, "pedido_em": datetime.now(FUSO).isoformat(timespec="seconds")}
     gravar(ARQ_REL, d)
     # costuma ficar pronto em 1–3 minutos: espera um pouco; se não, a próxima rodada termina
     for _ in range(int(c.get("espera_inicial_seg", 180)) // 30):
         await asyncio.sleep(30)
         if await relatorio_semanal_continuar(context):
             return
+
+
+async def _rel_avisar(bot, p, texto):
+    for chat, top in p.get("destinos") or [[p.get("chat"), None]]:
+        if chat == CFG.get("gestor_chat_id") or len(p.get("destinos") or []) <= 1:
+            await enviar(bot, chat, texto, message_thread_id=top)
 
 
 async def relatorio_semanal_continuar(context) -> bool:
@@ -3367,59 +3389,115 @@ async def relatorio_semanal_continuar(context) -> bool:
         if datetime.now(FUSO) - pedido_em > timedelta(hours=3):
             d.pop("pendente", None)
             gravar(ARQ_REL, d)
-            await enviar(context.bot, p["chat"], "⚠️ O Leankeep não terminou o relatório de atividades em 3 horas. "
-                                                 "Peça de novo com /relatorio.")
+            await _rel_avisar(context.bot, p, "⚠️ O Leankeep não terminou o relatório de atividades em 3 horas. "
+                                              "Peça de novo com /relatorio.")
             return True
         return False
     d.pop("pendente", None)
     gravar(ARQ_REL, d)
     if sit != "pronto":
-        await enviar(context.bot, p["chat"], f"⚠️ Relatório de atividades {inicio:%d/%m} a {fim:%d/%m}: "
-                                             + ("o Leankeep não encontrou atividades no período."
-                                                if sit == "sem_dados" else "o Leankeep deu erro ao gerar. Peça de novo com /relatorio."))
+        await _rel_avisar(context.bot, p, f"⚠️ Relatório de atividades {inicio:%d/%m} a {fim:%d/%m}: "
+                          + ("o Leankeep não encontrou atividades no período."
+                             if sit == "sem_dados" else "o Leankeep deu erro ao gerar. Peça de novo com /relatorio."))
         return True
     try:
-        conteudo = await asyncio.wait_for(asyncio.to_thread(RS.baixar, LK, item), 300)
         RS.configurar(c)
+        conteudo = await asyncio.wait_for(asyncio.to_thread(RS.baixar, LK, item), 300)
         linhas, _ = await asyncio.to_thread(RS.ler_export, conteudo)
+        if fim >= hoje():  # período até hoje: o que ainda está no prazo não entra como "não realizado"
+            linhas = RS.so_vencidas(linhas, datetime.now(FUSO))
         res = RS.resumir(linhas)
         unidade = c.get("unidade", "CB JUNDIAÍ")
         hist = d.setdefault("historico", {})
-        ant = hist.get((inicio - timedelta(days=7)).isoformat())
+        ant = None if p.get("atualizado") else hist.get((inicio - timedelta(days=7)).isoformat())
         tot = res["total"] or 1
-        hist[inicio.isoformat()] = {s: round(res["status"][s] / tot, 4) for s in RS.SITUACOES}
-        d["historico"] = dict(sorted(hist.items())[-30:])
-        gravar(ARQ_REL, d)
+        if not p.get("atualizado"):
+            hist[inicio.isoformat()] = {s: round(res["status"][s] / tot, 4) for s in RS.SITUACOES}
+            d["historico"] = dict(sorted(hist.items())[-30:])
+            gravar(ARQ_REL, d)
         xlsx = await asyncio.to_thread(RS.planilha, linhas, res, inicio, fim, unidade)
         png = await asyncio.to_thread(RS.imagem, res, inicio, fim, unidade, ant)
         png2 = await asyncio.to_thread(RS.imagem_pizza, res, inicio, fim, unidade)
     except Exception as e:
         log.exception("Relatório semanal: falhou ao montar")
-        await enviar(context.bot, p["chat"], f"⚠️ Baixei o relatório do Leankeep, mas não consegui montar a planilha.\n"
-                                             f"<i>{esc(str(e)[:250])}</i>")
+        await enviar(context.bot, CFG.get("gestor_chat_id"),
+                     f"⚠️ Baixei o relatório do Leankeep, mas não consegui montar a planilha.\n<i>{esc(str(e)[:250])}</i>")
         return True
     st = res["status"]
     piores = sorted(((pl, v) for pl, v in res["planos"].items() if v[1]), key=lambda x: -(x[1][1] / x[1][0]))[:3]
-    leg = [f"📊 <b>Atividades Leankeep – {inicio:%d/%m} a {fim:%d/%m}</b>",
+    leg = [f"📊 <b>Atividades Leankeep – {inicio:%d/%m} a {fim:%d/%m}</b>"
+           + (f" (atualizado às {datetime.now(FUSO):%H:%M})" if p.get("atualizado") else ""),
            f"{res['total']} atividades · no prazo <b>{st['OK'] / tot:.1%}</b>".replace(".", ","),
            f"Atrasadas: {st['ATRASADO']} · Antecipadas: {st['ANTECIPADO']} · Não realizadas: {st['NÃO REALIZADO']}"]
     if piores:
         leg.append("Mais pendências: " + "; ".join(f"{esc(pl.title())} ({v[1]}/{v[0]})" for pl, v in piores))
-    from telegram import InputFile
-    alvo = TESTE.get() or p["chat"]
-    from telegram import InputMediaPhoto
-    try:  # as duas imagens juntas (álbum): barras + pizzas
-        await context.bot.send_media_group(alvo, [
-            InputMediaPhoto(png, caption=limpar_texto("\n".join(leg))[:1024], parse_mode=ParseMode.HTML),
-            InputMediaPhoto(png2)])
-    except Exception as e:
-        log.warning("Relatório semanal: álbum falhou (%s); mandando separado", e)
-        await context.bot.send_photo(alvo, png, caption=limpar_texto("\n".join(leg))[:1024], parse_mode=ParseMode.HTML)
-        await context.bot.send_photo(alvo, png2)
-    nome = f"Analise Leankeep {unidade} {inicio:%d-%m} a {fim:%d-%m-%Y}.xlsx"
-    await context.bot.send_document(alvo, InputFile(xlsx, filename=nome),
-                                    caption="Planilha da semana (RESUMO com os gráficos + BASE). Abra no Excel.")
+    from telegram import InputFile, InputMediaPhoto
+    dias = int(c.get("dias_atualizado", 7))
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"🔄 Relatório atualizado (últimos {dias} dias)",
+                                                     callback_data="rs|atual")]])
+    for chat, top in p.get("destinos") or [[p.get("chat"), None]]:
+        alvo, top = (TESTE.get(), None) if TESTE.get() else (chat, top)
+        try:  # as duas imagens juntas (álbum): barras + pizzas
+            await context.bot.send_media_group(alvo, [
+                InputMediaPhoto(png, caption=limpar_texto("\n".join(leg))[:1024], parse_mode=ParseMode.HTML),
+                InputMediaPhoto(png2)], message_thread_id=top)
+        except Exception as e:
+            log.warning("Relatório semanal: álbum falhou (%s); mandando separado", e)
+            await context.bot.send_photo(alvo, png, caption=limpar_texto("\n".join(leg))[:1024],
+                                         parse_mode=ParseMode.HTML, message_thread_id=top)
+            await context.bot.send_photo(alvo, png2, message_thread_id=top)
+        # álbum não aceita botão: o botão vem numa mensagem curta logo abaixo
+        await enviar(context.bot, alvo, "Quer os números mais recentes? Toque abaixo 👇", reply_markup=kb,
+                     message_thread_id=top)
+    # planilha: só por email (se o email não estiver configurado, vai no seu privado)
+    nome = f"Analise Leankeep {c.get('unidade', 'CB JUNDIAÍ')} {inicio:%d-%m} a {fim:%d-%m-%Y}.xlsx"
+    ecfg = _email_cfg()
+    enviado = None
+    if ecfg and rel_sem_cfg().get("planilha_por_email", True):
+        try:
+            enviado = await asyncio.to_thread(
+                RS.enviar_email, xlsx, nome, f"Análise Leankeep – {inicio:%d/%m} a {fim:%d/%m/%Y}",
+                "\n".join(re.sub(r"<[^>]+>", "", x) for x in leg) + "\n\nPlanilha em anexo (RESUMO com os gráficos + BASE).",
+                ecfg)
+        except Exception as e:
+            log.warning("Relatório semanal: email falhou: %s", e)
+            await enviar(context.bot, CFG.get("gestor_chat_id"), f"⚠️ Não consegui mandar a planilha por email: "
+                                                                 f"<i>{esc(str(e)[:200])}</i>. Vai aqui mesmo:")
+    if not enviado and CFG.get("gestor_chat_id"):
+        await context.bot.send_document(TESTE.get() or CFG["gestor_chat_id"], InputFile(xlsx, filename=nome),
+                                        caption="Planilha da semana (RESUMO com os gráficos + BASE)."
+                                                + ("" if ecfg else " Para receber por email, veja /relatorio_email."))
     return True
+
+
+async def botao_relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🔄 Relatório atualizado: os últimos dias até agora, no mesmo chat/tópico onde foi tocado."""
+    q = update.callback_query
+    if MODO != "leankeep":
+        await q.answer("Sem acesso ao Leankeep agora.", show_alert=True)
+        return
+    p = ler(ARQ_REL, {}).get("pendente")
+    if p:
+        await q.answer("Já estou gerando um relatório – chega em alguns minutos ✅", show_alert=False)
+        return
+    dias = int(rel_sem_cfg().get("dias_atualizado", 7))
+    fim = hoje()
+    ini = fim - timedelta(days=dias - 1)
+    await q.answer(f"Pedi ao Leankeep: {ini:%d/%m} a {fim:%d/%m}. Chega em alguns minutos.")
+    top = q.message.message_thread_id if q.message.is_topic_message else None
+    await enviar(context.bot, q.message.chat.id,
+                 f"⏳ {esc(q.from_user.first_name)} pediu o relatório atualizado ({ini:%d/%m} a {fim:%d/%m}). "
+                 f"Chega aqui em alguns minutos.", message_thread_id=top)
+    await relatorio_semanal_pedir(context, ini, fim, chat=q.message.chat.id, topico=top, atualizado=True)
+
+
+async def cmd_relatorio_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ok = _email_cfg()
+    await update.effective_message.reply_text(
+        ("✅ Email configurado: a planilha vai para " + ok["EMAIL_PARA"]) if ok else
+        "📧 Para a planilha ir por email, coloque no segredo ROBO_ENV do GitHub (Settings › Secrets › ROBO_ENV):\n"
+        "EMAIL_USUARIO=conta que envia (ex.: um Gmail)\nEMAIL_SENHA=senha de app dessa conta\n"
+        "EMAIL_PARA=seu email\n\nEnquanto isso, a planilha chega aqui no privado.")
 
 
 async def relatorio_semanal_job(context):
@@ -5128,6 +5206,8 @@ def montar_app(token: str) -> Application:
     app.add_handler(CommandHandler("auditoria", cmd_auditoria))
     app.add_handler(CommandHandler("seguimento", cmd_seguimento))
     app.add_handler(CommandHandler("relatorio", cmd_relatorio))
+    app.add_handler(CommandHandler("relatorio_email", cmd_relatorio_email))
+    app.add_handler(CallbackQueryHandler(botao_relatorio, pattern=r"^rs\|"))
     app.add_handler(CallbackQueryHandler(sg_botao, pattern=r"^sg\|"))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.PHOTO & filters.REPLY, sg_foto_privada))
     app.add_handler(CallbackQueryHandler(aud_botao, pattern=r"^au\|"))
