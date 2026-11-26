@@ -481,10 +481,39 @@ async def checar_palavra(bot, d, r, pchave, fim, agora, desde):
         return
     d["enviados"][marca] = agora.date().isoformat()
     chat, top = destino(r["topico"])
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"🚫 Hoje não teve desperdício de {palavra}",
+                                                     callback_data=f"bp|{r['id']}|{pchave}")]])
     await B.enviar(bot, chat, f"⚠️ <b>{B.esc(r['nome'])}</b>\n\nO registro de hoje não menciona "
-                              f"<b>{B.esc(palavra)}</b>, que é obrigatório. Complete o registro, por favor.\n\n"
+                              f"<b>{B.esc(palavra)}</b>, que é obrigatório. Complete o registro, por favor: "
+                              f"escreva aqui no tópico (ex.: <i>1l {B.esc(palavra)} Brahma</i>) ou, se não houve, "
+                              f"toque no botão.\n\n"
                               + B.marcacoes(r.get("marcar", cfg().get("marcar", []))),
-                   message_thread_id=top)
+                   message_thread_id=top, reply_markup=kb)
+
+
+async def botao_palavra(update: Update, context):
+    """Botão 'Hoje não teve desperdício de chopp': vale como complemento do registro do dia."""
+    q = update.callback_query
+    _, rid, pchave = q.data.split("|", 2)
+    r = next((x for x in rotinas() if x["id"] == rid), None)
+    if not r:
+        await q.answer("Rotina não encontrada.")
+        return
+    palavra = r.get("palavra_obrigatoria", "")
+    quem = q.from_user.full_name if q.from_user else "?"
+    d = dados()
+    d.setdefault("complementos", {}).setdefault(f"{rid}|{pchave}", []).append(
+        {"quem": quem, "em": datetime.now(B.FUSO).isoformat(timespec="minutes"),
+         "texto": f"sem desperdício de {palavra} (botão)"})
+    gravar(d)
+    await q.answer("Anotado! ✅")
+    try:
+        await q.edit_message_text(
+            B.limpar_texto(f"✅ <b>{B.esc(r.get('nome_curto', r['nome']))}</b> – {B.esc(pchave[-5:][3:] + '/' + pchave[5:7]) if len(pchave) == 10 else B.esc(pchave)}\n"
+                           f"Sem desperdício de <b>{B.esc(palavra)}</b> no dia, informado por {B.esc(quem.split(' ')[0])}. Obrigado!"),
+            parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
 
 
 # ---------------- registro das evidências ----------------
@@ -955,6 +984,7 @@ async def cmd_farol(update: Update, context):
 def registrar_handlers(app):
     from telegram.ext import CallbackQueryHandler, CommandHandler
     app.add_handler(CommandHandler("topico_bar", cmd_topico_bar))
+    app.add_handler(CallbackQueryHandler(botao_palavra, pattern=r"^bp\|"))
     app.add_handler(CommandHandler("bar", cmd_bar))
     app.add_handler(CommandHandler("farol", cmd_farol))
     app.add_handler(CallbackQueryHandler(botao_classificar, pattern=r"^bc\|"))
