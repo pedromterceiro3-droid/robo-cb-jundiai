@@ -80,10 +80,11 @@ def nome_item(i: dict) -> str:
 
 def legenda(i: dict, tipo: str, esc) -> str:
     """Texto do cartão (vai como legenda da foto: até 1024 caracteres)."""
-    topo = {"entrou": "🆕 <b>ENTROU NO CARDÁPIO</b>", "saiu": "❌ <b>SAIU DO CARDÁPIO</b>",
-            "preco": "💲 <b>PREÇO MUDOU</b>", "item": "🔎 <b>ITEM DO CARDÁPIO</b>"}[tipo]
+    topo = {"entrou": "🟢 <b>ENTROU NO CARDÁPIO</b>", "saiu": "🔴 <b>SAIU DO CARDÁPIO</b>",
+            "preco": "🟣 <b>PREÇO MUDOU</b>", "item": "🔎 <b>ITEM DO CARDÁPIO</b>"}[tipo]
     L = [topo, "", f"<b>{esc(nome_item(i))}</b>",
-         f"Cód. <b>{esc(i.get('codigo') or '—')}</b> · {esc(i.get('categoria') or '')}"]
+         f"Código: <code>{esc(i.get('codigo') or 'sem código')}</code>",
+         f"Seção: {esc((i.get('categoria') or '').split(' > ')[-1])}"]
     if tipo == "preco":
         L.append(f"Preço: {reais(i.get('preco_antes'))} → <b>{reais(i.get('preco'))}</b>")
     else:

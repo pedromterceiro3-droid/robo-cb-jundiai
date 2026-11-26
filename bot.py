@@ -3238,8 +3238,35 @@ async def cartao_cardapio(bot, chat, item: dict, tipo: str):
     await enviar(bot, chat, texto, reply_markup=kb)
 
 
+def texto_mudancas_cardapio(dif: dict, total_pratos: int, desde: str) -> str:
+    """Mensagem didática, no formato do quadro de vinhos: um bloco por tipo de mudança."""
+    import cardapio as CD
+    L = [f"🍽️ <b>Cardápio da Tagme – o que mudou</b> ({datetime.now(FUSO):%d/%m})",
+         f"<i>Comparando com a conferência de {esc(desde)}</i>"]
+    blocos = (("saiu", "SAIU DO CARDÁPIO", "🔴", "O cliente não vê mais este item."),
+              ("entrou", "ENTROU NO CARDÁPIO", "🟢", "Agora aparece para o cliente."),
+              ("preco", "PREÇO MUDOU", "🟣", ""))
+    for chave, titulo, cor, explica in blocos:
+        itens = dif[chave]
+        L += ["", f"<b>{titulo}</b> {cor} ({len(itens)})"]
+        if not itens:
+            L.append("<i>Nada.</i>")
+            continue
+        for i in itens[:25]:
+            L.append(f"• <b>{esc(CD.nome_item(i))}</b> · cód. <code>{esc(i.get('codigo') or 'sem código')}</code>")
+            if chave == "preco":
+                L.append(f"   {CD.reais(i.get('preco_antes'))} → <b>{CD.reais(i.get('preco'))}</b>")
+            else:
+                sec = (i.get("categoria") or "").split(" > ")[-1]
+                L.append(f"   {esc(sec)} · {CD.reais(i.get('preco'))}. {explica}")
+        if len(itens) > 25:
+            L.append(f"   … e mais {len(itens) - 25}")
+    L += ["", f"<i>Hoje o cardápio tem {total_pratos} pratos e bebidas.</i>"]
+    return "\n".join(L)
+
+
 async def cardapio_diario(context: ContextTypes.DEFAULT_TYPE, chat=None):
-    """Compara o cardápio da Tagme de hoje com o da última vez e manda o que mudou (só no privado)."""
+    """Compara o cardápio da Tagme de hoje com o da última conferência e explica o que mudou (privado)."""
     import cardapio as CD
     destino = chat or CFG.get("gestor_chat_id")
     if not destino:
@@ -3248,43 +3275,57 @@ async def cardapio_diario(context: ContextTypes.DEFAULT_TYPE, chat=None):
         agora = await asyncio.wait_for(asyncio.to_thread(CD.buscar, int(card_cfg().get("store_id", 1217))), 120)
     except Exception as e:
         log.warning("Cardápio: erro ao ler a Tagme: %s", e)
-        await enviar(context.bot, destino, f"⚠️ Não consegui ler o cardápio da Tagme agora: {esc(str(e)[:200])}")
+        await enviar(context.bot, destino, f"⚠️ Não consegui abrir o cardápio da Tagme agora. Tento de novo depois.\n"
+                                           f"<i>Detalhe: {esc(str(e)[:150])}</i>")
         return
+    pratos = len({i["produto_id"] for i in agora.values()})
     ant = ler(ARQ_CARDAPIO, {})
-    gravar(ARQ_CARDAPIO, {"em": datetime.now(FUSO).isoformat(timespec="minutes"), "itens": agora})
+    gravar(ARQ_CARDAPIO, {"em": datetime.now(FUSO).isoformat(timespec="minutes"), "itens": agora,
+                          "ultima_dif": ant.get("ultima_dif")})
     if not ant.get("itens"):
         await enviar(context.bot, destino,
-                     f"📸 <b>Cardápio Tagme – CB Jundiaí</b>\n\nPrimeira leitura feita: <b>{len(agora)}</b> itens "
-                     f"(contando cada tamanho). A partir de agora, todo dia às {esc(card_cfg().get('horario', '09:00'))} "
-                     f"aviso o que entrou, saiu ou mudou de preço.\n\nPara ver um item: /cardapio_item código ou nome")
+                     f"📖 <b>Cardápio da Tagme – CB Jundiaí</b>\n\n"
+                     f"Pronto, já conferi o cardápio de hoje: <b>{pratos} pratos e bebidas</b>.\n\n"
+                     f"A partir de agora, todo dia às {esc(card_cfg().get('horario', '09:00'))} eu te conto o que mudou:\n"
+                     f"• o que <b>saiu</b> do cardápio 🔴\n• o que <b>entrou</b> no cardápio 🟢\n"
+                     f"• o que <b>mudou de preço</b> 🟣\n\n"
+                     f"Se nada mudar, não mando mensagem.\n\n"
+                     f"Quer ver um prato com foto? Escreva /cardapio_item e o código ou o nome.\n"
+                     f"Exemplo: <code>/cardapio_item bacalhau</code>")
         return
     dif = CD.comparar(ant["itens"], agora)
     n = sum(len(v) for v in dif.values())
-    desde = ant.get("em", "")[:16].replace("T", " ")
+    desde = ant.get("em", "")[:16].replace("T", " às ")
+    desde = f"{desde[8:10]}/{desde[5:7]}{desde[10:]}" if len(desde) >= 10 else desde
     if not n:
-        if chat:  # pedido na mão: responde mesmo sem mudança
-            await enviar(context.bot, destino, f"🍽️ Cardápio Tagme: nada mudou desde {esc(desde)} "
-                                               f"({len(agora)} itens).")
+        if chat:
+            await enviar(context.bot, destino, f"🍽️ Cardápio da Tagme: <b>nada mudou</b> desde a conferência de {esc(desde)}.\n"
+                                               f"<i>{pratos} pratos e bebidas no cardápio.</i>")
         return
-    L = [f"🍽️ <b>Cardápio Tagme x ontem – {datetime.now(FUSO):%d/%m}</b>", "",
-         f"{len(agora)} itens no cardápio (comparado com {esc(desde)})",
-         f"🆕 Entraram: <b>{len(dif['entrou'])}</b> · ❌ Saíram: <b>{len(dif['saiu'])}</b> · "
-         f"💲 Preço mudou: <b>{len(dif['preco'])}</b>"]
-    await enviar(context.bot, destino, "\n".join(L))
+    d = ler(ARQ_CARDAPIO, {})
+    d["ultima_dif"] = dif
+    gravar(ARQ_CARDAPIO, d)
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("📷 Ver com fotos", callback_data="cd|fotos"),
+                                InlineKeyboardButton("🔗 Abrir no GIA", url=CD.LINK_GIA)]])
+    await enviar(context.bot, destino, texto_mudancas_cardapio(dif, pratos, desde), reply_markup=kb)
+
+
+async def botao_cardapio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """📷 Ver com fotos: manda um cartão (foto, código, descrição, preço) para cada mudança."""
+    q = update.callback_query
+    dif = (ler(ARQ_CARDAPIO, {}) or {}).get("ultima_dif") or {}
+    if not any(dif.values()):
+        await q.answer("Não há mudanças para mostrar.")
+        return
+    await q.answer("Mandando as fotos…")
     limite = int(card_cfg().get("max_cartoes", 15))
-    enviados, resto = 0, []
+    n = 0
     for tipo in ("saiu", "entrou", "preco"):
-        for item in dif[tipo]:
-            if enviados < limite:
-                await cartao_cardapio(context.bot, destino, item, tipo)
-                enviados += 1
-            else:
-                resto.append((tipo, item))
-    if resto:
-        ic = {"entrou": "🆕", "saiu": "❌", "preco": "💲"}
-        L = [f"… e mais {len(resto)}:"] + [f"• {esc(CD.nome_item(i))} · cód. {esc(i.get('codigo') or '—')} {ic[t]}"
-                                           for t, i in resto[:60]]
-        await enviar(context.bot, destino, "\n".join(L))
+        for item in dif.get(tipo, []):
+            if n >= limite:
+                break
+            await cartao_cardapio(context.bot, q.message.chat.id, item, tipo)
+            n += 1
 
 
 async def cmd_cardapio(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4108,6 +4149,7 @@ def montar_app(token: str) -> Application:
     app.add_handler(CommandHandler("tagme_campos", cmd_tagme_campos))
     app.add_handler(CommandHandler("cardapio", cmd_cardapio))
     app.add_handler(CommandHandler("cardapio_item", cmd_cardapio_item))
+    app.add_handler(CallbackQueryHandler(botao_cardapio, pattern=r"^cd\|"))
     app.add_handler(CallbackQueryHandler(botao_reativar, pattern=r"^ocr\|"))
     app.add_handler(CommandHandler("cancelar", cmd_cancelar))
     app.add_handler(CallbackQueryHandler(botao_alerta, pattern=r"^al\|"))
