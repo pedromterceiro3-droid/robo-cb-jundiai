@@ -330,7 +330,7 @@ class Legado:
         self.campos[self.c("data")] = q.strftime("%d/%m/%Y")
         self.campos[self.c("hora")] = q.strftime("%H:%M")
 
-    def salvar(self) -> str:
+    def salvar(self, descricao: str = "") -> str:
         """Clica em SALVAR. Devolve o número da ocorrência (ex.: D171399)."""
         alvo = f"{self.pre}$PageContent$SaveButton$_Button"
         dados = dict(self.campos)
@@ -339,11 +339,36 @@ class Legado:
         r.raise_for_status()
         texto = " ".join(unescape(re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ", r.text,
                                          flags=re.S | re.I)).split())
-        m = re.search(r"N[ºo°]\s*Ocorr[eê]ncia\s*([A-Z]\d{5,7})", texto) or re.search(r"\b([A-Z]\d{6})\b", texto)
+        m = re.search(r"N[ºo°]\s*Ocorr[eê]ncia\s*([A-Z]\d{5,7})", texto)
         if m:
             return m.group(1)
-        erros = re.findall(r"(?i)((?:campo|preencha|obrigat|inv[aá]lid|erro)[^.]{0,120})", texto)
-        raise RuntimeError("o Leankeep não confirmou o registro. " + (" | ".join(erros[:3]) or texto[:250]))
+        # depois de salvar, o Leankeep pode voltar para a LISTA: acha a linha com a nossa descrição
+        trecho = " ".join((descricao.strip().splitlines() or [""])[0].split())[:30]
+        if trecho:
+            i = texto.find(trecho)
+            if i >= 0:
+                antes = re.findall(r"\b([A-Z]\d{6})\b", texto[max(0, i - 400):i])
+                if antes:
+                    return antes[-1]
+                depois = re.search(r"\b([A-Z]\d{6})\b", texto[i:i + 200])
+                if depois:
+                    return depois.group(1)
+            if "Lista de Ocorr" in texto or "Filtros Globais" in texto:
+                return "SALVA (número não identificado – veja a Lista de Ocorrências)"
+        # não salvou: junta os avisos que o site mostraria (alertas, validações) e o estado dos campos
+        alertas = re.findall(r"""alert\(\s*['"]([^'"]{3,200})['"]""", r.text)
+        alertas += re.findall(r"""(?:ShowMessage|showMessage|MessageBox|radalert)\(\s*['"]([^'"]{3,200})['"]""", r.text)
+        valid = re.findall(r'(?is)<span[^>]+(?:Validator|error|erro)[^>]*>\s*([^<]{3,150})</span>', r.text)
+        _, campos = _ler_form(r.text) if "TabPanelAnomalia" in r.text else ("", {})
+        def val(ch):
+            v = campos.get(self.c(ch) + "$Value") or campos.get(self.c(ch), "")
+            return (v[:60] if v else "vazio")
+        estado = (f"unidade={val('site')} | grupo={val('grupo')} | área={val('area')} | "
+                  f"prioridade={campos.get(self.c('prioridade'), '?')} | descrição={'ok' if campos.get(self.c('descricao')) else 'vazia'}"
+                  ) if campos else "formulário não voltou"
+        raise RuntimeError("o Leankeep não salvou. "
+                           + (f"Avisos: {' | '.join(dict.fromkeys(alertas + valid))[:300]}. " if alertas or valid else "")
+                           + f"Campos: {estado}. Página: {str(r.url)[-60:]}")
 
 
 UNIDADE = ("57896", "CB JUNDIAÍ")
@@ -367,7 +392,7 @@ def registrar(token: str, refresh: str | None, grupo: tuple[str, str], area: tup
         except Exception as e:  # sem a foto, registra mesmo assim e avisa
             log.warning("Leankeep: foto não subiu: %s", e)
             aviso_foto = f"sem foto ({e})"
-    numero = lg.salvar()
+    numero = lg.salvar(descricao)
     return f"{numero}|{aviso_foto}" if aviso_foto else numero
 
 
