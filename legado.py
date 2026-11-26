@@ -134,6 +134,7 @@ class Legado:
                                   domain=dom, path="/")
         self.pre = "ctl01"
         self.modo_escolha = None
+        self.ultimo = ""
         self.ult_areas = {}
         self.html = ""
         self.action = ""
@@ -192,13 +193,14 @@ class Legado:
             raise RuntimeError(f"depois de escolher ({alvo.rsplit('$', 2)[-2]}), o Leankeep não devolveu o "
                                f"formulário: {str(r.url)[:70]} | {corpo[:200]}")
         self._atualizar(r.text, str(r.url))
+        self.ultimo = r.text
         return r.text
 
-    def _postback_async(self, alvo: str, extra: dict | None = None):
+    def _postback_async(self, alvo: str, extra: dict | None = None, quem: str | None = None):
         """Postback "AJAX" (UpdatePanel), igual ao navegador ao fechar a janelinha de seleção."""
         dados = dict(self.campos)
         dados.update(extra or {})
-        dados[f"{self.pre}$scriptManager1"] = f"{self.pre}$PageContent$UpdatePanel1|{alvo}"
+        dados[f"{self.pre}$scriptManager1"] = f"{self.pre}$PageContent$UpdatePanel1|{quem or alvo}"
         dados["__EVENTTARGET"] = alvo
         dados["__EVENTARGUMENT"] = ""
         dados["__ASYNCPOST"] = "true"
@@ -232,6 +234,7 @@ class Legado:
         self.campos.update(ocultos)
         if paineis:
             self.html = "\n".join(paineis) + self.html
+        self.ultimo = "\n".join(paineis) if paineis else txt
 
     def _escolher(self, chave: str, vid: str, nome: str, conferir) -> bool:
         """Tenta os jeitos possíveis de avisar o servidor da escolha; para no que funcionar."""
@@ -329,10 +332,48 @@ class Legado:
         estado = {"isEnabled": "true", "uploadedFiles": [{"fileInfo": j["fileInfo"], "metaData": j["metaData"]}]}
         self.campos[self.c("foto_state")] = json.dumps(estado, separators=(",", ":"))
 
+    def _linhas_emitente(self, html: str) -> list[str]:
+        """Nomes (sem $Value) das linhas de Solicitante que existem no formulário devolvido."""
+        return list(dict.fromkeys(re.findall(
+            r'name="([^"]*AnomaliasEmitentesTableControlRepeater\$ctl\d+\$Emitente)\$Value"', html)))
+
+    def garantir_emitente(self, emitente: tuple[str, str] = ("84106", "Pedro Melo")) -> bool:
+        """Solicitante é obrigatório. Ao trocar a unidade o formulário apaga a linha: clica no ⊕ e preenche."""
+        eid, enome = emitente
+        base = self.ultimo or self.html
+        linhas = self._linhas_emitente(base)
+        if not linhas:  # clica no ⊕ (botão-imagem: o navegador manda nome.x / nome.y)
+            botao = f"{self.pre}$PageContent$TabContainer$TabPanelAnomalia$EmitenteAddButton"
+            for modo in ("async", "cheio"):
+                try:
+                    if modo == "async":
+                        self._postback_async("", {botao + ".x": "6", botao + ".y": "6"}, quem=botao)
+                    else:
+                        self._postback("", {botao + ".x": "6", botao + ".y": "6"})
+                except Exception as e:
+                    log.info("Leankeep antigo: ⊕ solicitante via %s falhou: %s", modo, e)
+                    continue
+                linhas = self._linhas_emitente(self.ultimo or self.html)
+                if linhas:
+                    break
+        if not linhas:
+            return False
+        nome = linhas[0]
+        extra = {nome + "$Value": valor_qs(eid, enome), nome + "$Text": enome}
+        self.campos.update(extra)
+        # avisa o servidor da escolha, como a janelinha faz (mesmo caminho da unidade/grupo)
+        for alvo in (nome.replace("$", "_"), nome):
+            try:
+                self._postback_async(alvo, extra)
+                break
+            except Exception:
+                continue
+        self.campos.update(extra)
+        return True
+
     def preencher(self, descricao: str, prioridade: str, quando: datetime | None = None,
                   emitente: tuple[str, str] = ("84106", "Pedro Melo")):
         q = quando or datetime.now()
-        # Solicitante (emitente): obrigatório. Na página aberta direto ele pode vir vazio.
         e = self.c("emitente")
         atual = self.campos.get(e + "$Value", "")
         if not re.search(r'"Value":"\d+"', atual):
@@ -397,6 +438,8 @@ def registrar(token: str, refresh: str | None, grupo: tuple[str, str], area: tup
         raise RuntimeError(f"o Leankeep não aceitou o grupo {grupo[1]}")
     if not lg.escolher_area(*area):
         raise RuntimeError(f"o Leankeep não aceitou a área {area[1]}")
+    if not lg.garantir_emitente(emitente):
+        log.warning("Leankeep antigo: não consegui incluir a linha do Solicitante")
     lg.preencher(descricao, prioridade, quando, emitente)
     aviso_foto = ""
     if foto:
