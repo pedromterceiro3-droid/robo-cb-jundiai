@@ -43,6 +43,15 @@ CAMPO = {
 BOTAO_SALVAR = "ctl01$PageContent$SaveButton$_Button"
 PRIORIDADES = {"Alta": "1815", "Média": "1814", "Baixa": "1813"}
 
+# ---- auditorias (batidão) ----
+URL_LISTA_AUD = "/AuditoriasManutencao/ShowAuditoriasManutencaoPage.aspx"
+URL_NOVA_AUD = ("/AuditoriasManutencao/EditAuditoriaManutencaoPage.aspx?RedirectStyle=8h1PD8d4XrYU%2fjjuIFxkXw%3d%3d"
+                "&Target=6kHYItm7D9btWhZJUrhTcNXXPsKN4GBneGI4PFUxxxUbNn1%2bBMpYnsIpbZNOqKk8gP2AOaqefe0fsetX5pAu2mLDM"
+                "%2b3iDq%2fY5q%2f68q8WqAI%3d")
+PA = "ctl01$PageContent$TabContainer$TabPanelDadosGerais$"
+CAMPO_AUD = {"site": PA + "Site0", "nome": PA + "Nome", "responsavel": PA + "Responsavel",
+             "data": PA + "DataVistoria", "status": PA + "Status3", "comentarios": PA + "Comentarios"}
+
 
 class _Form(HTMLParser):
     """Lê os campos do <form> (input/select/textarea) como o navegador mandaria."""
@@ -119,7 +128,12 @@ def valor_qs(id_: str, texto: str) -> str:
 
 
 class Legado:
-    def __init__(self, token: str, refresh: str | None = None, empresa_id: str = "3802"):
+    def __init__(self, token: str, refresh: str | None = None, empresa_id: str = "3802",
+                 url_novo: str = URL_NOVO, marca: tuple[str, str] = ("TabPanelAnomalia", "Descricao"),
+                 campo: dict | None = None):
+        self.url_novo = url_novo
+        self.marca = marca          # (aba, campo) que provam que o formulário certo voltou
+        self.campo = campo or CAMPO
         self.http = httpx.Client(base_url=BASE, timeout=httpx.Timeout(60, connect=20), follow_redirects=True,
                                  headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                                                         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131 Safari/537.36",
@@ -144,11 +158,15 @@ class Legado:
     def abrir(self):
         from zoneinfo import ZoneInfo
         agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
-        r = self.http.get(URL_NOVO + f"&currentDate={agora:%Y-%m-%d}&currentTime={agora:%H-%M}")
+        url = self.url_novo
+        if "/Anomalias/" in url:
+            url += f"&currentDate={agora:%Y-%m-%d}&currentTime={agora:%H-%M}"
+        r = self.http.get(url)
         final = str(r.url)
         if r.status_code >= 400 or re.search(r"SignIn|/login|/logout|Reauth", final, re.I):
             raise RuntimeError(f"o Leankeep antigo não aceitou o acesso do robô (foi para {final[:80]}, {r.status_code})")
-        m = re.search(r'(ctl0\d)[$_]PageContent[$_]TabContainer[$_]TabPanelAnomalia[$_]Descricao', r.text)
+        m = re.search(r'(ctl0\d)[$_]PageContent[$_](?:TabContainer[$_])?'
+                      + (self.marca[0] + r'[$_]' if self.marca[0] else '') + self.marca[1], r.text)
         if m:  # a página aberta direto (fora da janelinha) usa ctl00 em vez de ctl01
             self.pre = m.group(1)
         if not m:
@@ -159,7 +177,7 @@ class Legado:
                 if marca.lower() in corpo.lower():
                     corpo = corpo[max(0, corpo.lower().find(marca.lower()) - 60):]
                     break
-            raise RuntimeError(f"abri a página, mas não achei o formulário de ocorrência. "
+            raise RuntimeError(f"abri a página, mas não achei o formulário ({self.marca[0]}). "
                                f"Endereço: {final[:90]} | status {r.status_code} | título: "
                                f"{(titulo.group(1) if titulo else '?')[:60]} | texto: {corpo[:220]}")
         self._atualizar(r.text, final)
@@ -167,7 +185,7 @@ class Legado:
 
     def c(self, chave: str) -> str:
         """Nome do campo no formulário (com o prefixo ctl00/ctl01 que a página usou)."""
-        return CAMPO[chave].replace("ctl01", self.pre, 1)
+        return self.campo[chave].replace("ctl01", self.pre, 1)
 
     def _atualizar(self, html: str, url_atual: str):
         self.html = html
@@ -187,7 +205,7 @@ class Legado:
         r = self.http.post(self.action, data=dados,
                            headers={"Referer": quote(self.action, safe=":/?&=%#;+,@!$'()*~.-_")})
         r.raise_for_status()
-        if "TabPanelAnomalia" not in r.text or "Descricao" not in r.text:
+        if self.marca[0] not in r.text or self.marca[1] not in r.text:
             corpo = " ".join(unescape(re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ", r.text,
                                              flags=re.S | re.I)).split())
             raise RuntimeError(f"depois de escolher ({alvo.rsplit('$', 2)[-2]}), o Leankeep não devolveu o "
@@ -211,7 +229,7 @@ class Legado:
         r.raise_for_status()
         txt = r.text
         if not re.match(r"^\d+\|", txt):  # não veio no formato AJAX: tenta como página inteira
-            if "Descricao" in txt:
+            if self.marca[1] in txt:
                 self._atualizar(txt, str(r.url))
             return
         # formato: tamanho|tipo|id|conteúdo|
@@ -423,6 +441,58 @@ class Legado:
                            + (f"Avisos: {' | '.join(dict.fromkeys(alertas + valid))[:300]}. " if alertas or valid else "")
                            + f"Campos: {estado}. Página: {str(r.url)[-60:]}")
 
+    # ---------- auditorias (batidão) ----------
+    def _get(self, url: str):
+        r = self.http.get(url)
+        final = str(r.url)
+        if r.status_code >= 400 or re.search(r"SignIn|/login|/logout|Reauth", final, re.I):
+            raise RuntimeError(f"o Leankeep antigo não aceitou o acesso do robô (foi para {final[:80]}, {r.status_code})")
+        return r
+
+    def _enviar_form(self, url_atual: str, html: str, extra: dict) -> httpx.Response:
+        action, campos = _ler_form(html)
+        base = url_atual.split("?")[0].rsplit("/", 1)[0] + "/"
+        alvo = action if action.startswith("http") else (BASE + action if action.startswith("/")
+                                                          else base + action.lstrip("./"))
+        campos["__EVENTTARGET"], campos["__EVENTARGUMENT"] = "", ""
+        campos.update(extra)
+        r = self.http.post(alvo, data=campos, headers={"Referer": quote(url_atual, safe=":/?&=%#;+,@!$'()*~.-_")})
+        r.raise_for_status()
+        return r
+
+    def auditorias(self, busca: str = "JUNDIA") -> list[dict]:
+        """Últimas auditorias da unidade (lista do site, filtro 'Tudo'), da mais antiga para a mais nova."""
+        r = self._get(URL_LISTA_AUD)
+        pc = "ctl00$PageContent$"
+        r = self._enviar_form(str(r.url), r.text, {pc + "AuditoriasManutencaoNListSearchText1": busca,
+                                                    pc + "StatusFilter": "--ANY--",
+                                                    pc + "SearchButton2.x": "5", pc + "SearchButton2.y": "5"})
+        r = self._enviar_form(str(r.url), r.text, {pc + "Pagination$_LastPage.x": "3", pc + "Pagination$_LastPage.y": "3"})
+        linhas = _linhas_aud(r.text)
+        if len(linhas) < 6:  # última página quase vazia: pega também a anterior
+            r2 = self._enviar_form(str(r.url), r.text, {pc + "Pagination$_PreviousPage.x": "3",
+                                                         pc + "Pagination$_PreviousPage.y": "3"})
+            linhas = _linhas_aud(r2.text) + linhas
+        vistos, out = set(), []
+        for a in linhas:
+            if a["id"] not in vistos:
+                vistos.add(a["id"])
+                out.append(a)
+        return sorted(out, key=lambda a: int(a["id"]))
+
+    def url_ocorrencia_na_auditoria(self, url_aud: str) -> str:
+        """Abre a auditoria e clica em Ocorrências › Novo: devolve o endereço do formulário já ligado a ela."""
+        r = self._get(url_aud)
+        m = re.search(r"(ctl0\d)\$PageContent\$TabContainer\$TabPanelAnomalias\$NewButton", r.text)
+        if not m:
+            raise RuntimeError("abri a auditoria, mas não achei a aba Ocorrências › Novo")
+        r2 = self._enviar_form(str(r.url), r.text,
+                               {"__EVENTTARGET": f"{m.group(1)}$PageContent$TabContainer$TabPanelAnomalias$NewButton$_Button"})
+        m2 = re.search(r"Anomalias/(EditAnomaliasPage\.aspx\?[^'\"\s<]*?AuditoriaManutencaoID=[^'\"\s<&]+)", r2.text)
+        if not m2:
+            raise RuntimeError("cliquei em Novo dentro da auditoria, mas o Leankeep não devolveu o formulário ligado")
+        return "/Anomalias/" + unescape(m2.group(1))
+
 
 UNIDADE = ("57896", "CB JUNDIAÍ")
 
@@ -430,9 +500,13 @@ UNIDADE = ("57896", "CB JUNDIAÍ")
 def registrar(token: str, refresh: str | None, grupo: tuple[str, str], area: tuple[str, str], prioridade: str,
               descricao: str, foto: bytes | None = None, quando: datetime | None = None,
               empresa_id: str = "3802", unidade: tuple[str, str] = UNIDADE,
-              emitente: tuple[str, str] = ("84106", "Pedro Melo")) -> str:
-    """Cria a ocorrência no Leankeep (como o formulário do site). Devolve o número."""
-    lg = Legado(token, refresh, empresa_id).abrir()
+              emitente: tuple[str, str] = ("84106", "Pedro Melo"), auditoria: dict | None = None) -> str:
+    """Cria a ocorrência no Leankeep (como o formulário do site). Devolve o número.
+    Com `auditoria` (um item de auditorias()), a ocorrência nasce DENTRO dela (aba Ocorrências › Novo)."""
+    url_novo = URL_NOVO
+    if auditoria:
+        url_novo = Legado(token, refresh, empresa_id).url_ocorrencia_na_auditoria(auditoria["url"])
+    lg = Legado(token, refresh, empresa_id, url_novo=url_novo).abrir()
     lg.escolher_unidade(*unidade)
     if not lg.escolher_grupo(*grupo):
         raise RuntimeError(f"o Leankeep não aceitou o grupo {grupo[1]}")
@@ -469,3 +543,165 @@ def testar(token: str, refresh: str | None = None, max_grupos: int = 20, empresa
         except Exception as e:
             res["grupos"][f"{gid}|{nome}"] = f"erro: {e}"
     return res
+
+
+# =====================================================================
+#  Auditorias (batidão): "Auditoria N" – N conta dentro do mês, sem repetir
+# =====================================================================
+def _limpo(html: str) -> str:
+    return " ".join(unescape(re.sub(r"<[^>]+>", " ", html)).split())
+
+
+def _linhas_aud(html: str) -> list[dict]:
+    """Linhas da lista de auditorias: número, unidade, nome, data e o link de edição."""
+    out = []
+    for m in re.finditer(r"EditAuditoriaManutencaoPage\.aspx\?(AuditoriasManutencao=.*?)&#39;(.*?)</tr>", html, re.S):
+        cel = [_limpo(c) for c in re.findall(r'<td class="tableCellValue">(.*?)</td>', m.group(2), re.S)]
+        if len(cel) >= 4 and cel[0].isdigit():
+            try:
+                data = datetime.strptime(cel[3], "%d/%m/%Y").date()
+            except ValueError:
+                continue
+            out.append({"id": cel[0], "unidade": cel[1], "nome": cel[2], "data": data.isoformat(),
+                        "url": "/AuditoriasManutencao/EditAuditoriaManutencaoPage.aspx?" + unescape(m.group(1))})
+    return out
+
+
+def _num_auditoria(nome: str) -> int | None:
+    m = re.fullmatch(r"\s*auditoria\s*(\d+)\s*", nome or "", re.I)
+    return int(m.group(1)) if m else None
+
+
+def situacao_auditoria(lista: list[dict], hoje, dias_semana: int = 6) -> dict:
+    """atual = auditoria 'Auditoria N' mais nova dos últimos 7 dias; proximo = próximo nome livre do mês."""
+    from datetime import date as _d, timedelta
+    hoje = hoje if isinstance(hoje, _d) else hoje.date()
+    numeradas = [a for a in lista if _num_auditoria(a["nome"]) is not None]
+    recentes = [a for a in numeradas if hoje - timedelta(days=dias_semana) <= _d.fromisoformat(a["data"]) <= hoje]
+    do_mes = [_num_auditoria(a["nome"]) for a in numeradas if a["data"][:7] == hoje.isoformat()[:7]]
+    return {"atual": recentes[-1] if recentes else None, "proximo": f"Auditoria {max(do_mes, default=0) + 1}",
+            "mes": [a for a in numeradas if a["data"][:7] == hoje.isoformat()[:7]]}
+
+
+def listar_auditorias(token: str, refresh: str | None = None, empresa_id: str = "3802") -> list[dict]:
+    return Legado(token, refresh, empresa_id).auditorias()
+
+
+def criar_auditoria(token: str, refresh: str | None, nome: str, data, comentarios: str = "",
+                    empresa_id: str = "3802", unidade: tuple[str, str] = UNIDADE,
+                    responsavel: tuple[str, str] = ("84106", "Pedro Melo")) -> dict:
+    """Cria a auditoria (Dados Gerais) e devolve a linha dela na lista ({id, nome, data, url}).
+    Se já existir uma com o mesmo nome no mês, devolve essa (nunca duplica)."""
+    base = Legado(token, refresh, empresa_id)
+    mes = data.strftime("%Y-%m")
+    for a in base.auditorias():
+        if a["nome"].strip().lower() == nome.strip().lower() and a["data"][:7] == mes:
+            a["ja_existia"] = True
+            return a
+    lg = Legado(token, refresh, empresa_id, url_novo=URL_NOVA_AUD, marca=("TabPanelDadosGerais", "Nome"),
+                campo=CAMPO_AUD).abrir()
+    sid, snome = unidade
+    if (lg.unidade() or ("",))[0] != sid:
+        if not lg._escolher("site", sid, snome, lambda: (lg.unidade() or ("",))[0] == sid):
+            log.info("Leankeep antigo: unidade da auditoria preenchida direto (sem postback)")
+    c = lg.c
+    lg.campos[c("site") + "$Value"], lg.campos[c("site") + "$Text"] = valor_qs(sid, snome), snome
+    lg.campos[c("responsavel") + "$Value"] = valor_qs(*responsavel)
+    lg.campos[c("responsavel") + "$Text"] = responsavel[1]
+    lg.campos[c("nome")] = nome
+    lg.campos[c("data")] = data.strftime("%d/%m/%Y")
+    lg.campos[c("status")] = "1"  # Pendente
+    lg.campos[c("comentarios")] = comentarios[:1000]
+    dados = dict(lg.campos)
+    dados["__EVENTTARGET"], dados["__EVENTARGUMENT"] = f"{lg.pre}$PageContent$SaveButton$_Button", ""
+    r = lg.http.post(lg.action, data=dados, headers={"Referer": quote(lg.action, safe=":/?&=%#;+,@!$'()*~.-_")})
+    r.raise_for_status()
+    # confere na lista (só conta como criada quando aparece lá)
+    for a in reversed(base.auditorias()):
+        if a["nome"].strip().lower() == nome.strip().lower() and a["data"] == data.strftime("%Y-%m-%d"):
+            return a
+    alertas = re.findall(r"""alert\(\s*['"]([^'"]{3,200})['"]""", r.text)
+    valid = re.findall(r'(?is)<span[^>]+(?:Validator|error|erro)[^>]*>\s*([^<]{3,150})</span>', r.text)
+    raise RuntimeError("o Leankeep não salvou a auditoria. "
+                       + (f"Avisos: {' | '.join(dict.fromkeys(alertas + valid))[:300]}. " if alertas or valid else "")
+                       + f"Página: {str(r.url)[-60:]}")
+
+
+# =====================================================================
+#  Seguimento da ocorrência (aba Correções › Incluir Correção)
+# =====================================================================
+URL_PAINEL = "/Anomalias/ShowAnomaliasTablePage.aspx"
+URL_CORRECAO = ("/Anomalias/EditAcoesCorretivasPage.aspx?Anomalias={codigo}&RedirectStyle=8h1PD8d4XrYU%2fjjuIFxkXw%3d%3d"
+                "&Target=6kHYItm7D9btWhZJUrhTcDunIV3yCAb5FQiBn0byUBdB7%2bni7wolCitFL9%2bNezzPSotyYrI2AsSwMgJM22LKLQ%3d%3d"
+                "&TipoAcaoCorretivaID=JIpL%2b91tzcHweWzX9Iv13w%3d%3d")
+STATUS_CORRECAO = {  # código → nome (lista "Status" da correção, empresa Coco Bambu)
+    "35788": "Gerado O.S", "35782": "Em Andamento", "35785": "Agendada", "35795": "Equipe no local",
+    "35790": "Aguardando Material", "37117": "Aguardando terceirizada", "35791": "Em Orçamento",
+    "40114": "Aguardando diretoria", "35797": "Encaminhada para Assistência Técnica",
+    "35796": "Atendimento Realizado", "42402": "Realizado - Diretor aprovar", "37409": "Solucionada"}
+SOLUCIONADA = "37409"
+PC = "ctl01$PageContent$"
+CAMPO_CORR = {"status": PC + "TipoAcaoCorretivaEmpresa", "inicio": PC + "Inicio", "hora": PC + "HoraInicio",
+              "descricao": PC + "Descricao", "foto_state": "ctl01_PageContent_FotoAsyncUpload_ClientState"}
+
+
+def codigo_ocorrencia(lg: "Legado", numero: str) -> str:
+    """Procura a ocorrência pelo número (ex.: D171431) no Painel e devolve o código do link dela."""
+    r = lg._get(URL_PAINEL)
+    pc = "ctl00$PageContent$"
+    r = lg._enviar_form(str(r.url), r.text, {pc + "ProcurarPorFilter": "CQA",
+                                              pc + "AnomaliasNlistSearchText1": numero,
+                                              pc + "StatusFilter2": ["1", "2", "3", "4", "5"],
+                                              pc + "SearchButton2.x": "4", pc + "SearchButton2.y": "4"})
+    m = re.search(r"EditAnomaliasPage\.aspx\?Anomalias=([^&'\"]+)&amp;[^>]*>\s*N(?:º|°|o|&#186;|&ordm;|&#176;)?\.?\s*"
+                  + re.escape(numero) + r"\s*<", r.text)
+    if not m:
+        raise RuntimeError(f"não achei a ocorrência {numero} no Painel de Ocorrências do Leankeep")
+    return m.group(1)
+
+
+def seguimento(token: str, refresh: str | None, numero: str, status: str, descricao: str = "",
+               foto: bytes | None = None, quando: datetime | None = None, empresa_id: str = "3802") -> str:
+    """Inclui uma correção (seguimento) na ocorrência. status = código de STATUS_CORRECAO.
+    Devolve "ok" ou "ok|aviso"."""
+    if status not in STATUS_CORRECAO:
+        raise RuntimeError(f"status desconhecido: {status}")
+    if status == SOLUCIONADA and not foto:
+        raise RuntimeError("para Solucionada o Leankeep exige a foto da resolução")
+    base = Legado(token, refresh, empresa_id)
+    codigo = codigo_ocorrencia(base, numero)
+    lg = Legado(token, refresh, empresa_id, url_novo=URL_CORRECAO.format(codigo=codigo),
+                marca=("", "TipoAcaoCorretivaEmpresa"), campo=CAMPO_CORR).abrir()
+    # trocar o Status recarrega o formulário (igual ao site)
+    if lg.campos.get(lg.c("status")) != status:
+        lg.campos[lg.c("status")] = status
+        try:
+            lg._postback(lg.c("status"))
+        except Exception as e:
+            log.info("Leankeep antigo: postback do status falhou (%s); tentando AJAX", e)
+            lg._postback_async(lg.c("status"))
+        lg.campos[lg.c("status")] = status
+    q = quando or datetime.now()
+    lg.campos[lg.c("inicio")] = q.strftime("%d/%m/%Y")
+    lg.campos[lg.c("hora")] = q.strftime("%H:%M")
+    lg.campos[lg.c("descricao")] = (descricao or STATUS_CORRECAO[status])[:3900]
+    if foto:
+        lg.enviar_foto(foto)  # obrigatória em Solucionada: se falhar, não salva
+    dados = dict(lg.campos)
+    dados["__EVENTTARGET"], dados["__EVENTARGUMENT"] = f"{lg.pre}$PageContent$SaveButton$_Button", ""
+    r = lg.http.post(lg.action, data=dados, headers={"Referer": quote(lg.action, safe=":/?&=%#;+,@!$'()*~.-_")})
+    r.raise_for_status()
+    alertas = re.findall(r"""alert\(\s*['"]([^'"]{3,200})['"]""", r.text)
+    valid = [v for v in re.findall(r'(?is)<span[^>]+(?:Validator|error|erro)[^>]*>\s*([^<]{3,150})</span>', r.text)
+             if v.strip()]
+    if (alertas or valid) and "TipoAcaoCorretivaEmpresa" in r.text:
+        raise RuntimeError("o Leankeep não salvou o seguimento. Avisos: " + " | ".join(dict.fromkeys(alertas + valid))[:300])
+    # confere na própria ocorrência: a correção nova aparece na lista dela
+    try:
+        o = base._get("/Anomalias/EditAnomaliasPage.aspx?Anomalias=" + codigo)
+        texto = _limpo(o.text)
+        if STATUS_CORRECAO[status] in texto and q.strftime("%d/%m/%Y") in texto:
+            return "ok"
+        return "ok|não consegui confirmar na lista de correções – confira no Leankeep"
+    except Exception as e:
+        return f"ok|não consegui conferir ({e})"

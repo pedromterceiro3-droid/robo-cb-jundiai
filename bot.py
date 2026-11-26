@@ -774,6 +774,9 @@ def envios_diarios():
                     TODOS_DIAS, 1))
     if card_cfg().get("ativo", True):
         lst.append(("cardapio", cardapio_diario, hora(card_cfg().get("horario", "09:00")), TODOS_DIAS, 10))
+    if aud_cfg().get("ativo", True) and aud_cfg().get("lembrete_semanal", True) and MODO == "leankeep":
+        dia_txt, hora_txt = str(aud_cfg().get("quando", "seg 09:30")).split()
+        lst.append(("auditoria_semanal", auditoria_semanal, hora(hora_txt), ((DIAS[dia_txt] + 1) % 7,), 12))
     if sem_cfg().get("ativo", True):
         dia_txt, hora_txt = str(sem_cfg().get("quando", "seg 08:00")).split()
         lst.append(("resumo_semanal", enviar_semanal, hora(hora_txt), ((DIAS[dia_txt] + 1) % 7,), 36))
@@ -1073,6 +1076,15 @@ async def oc_baixa_privado(bot, num):
                                            + (f" (postada por {sol['por']})" if sol.get("por") else ""))
         except Exception as e:
             log.info("Não consegui copiar a foto da solução da #%s: %s", num, e)
+    lk = o.get("leankeep") or {}
+    if lk.get("numero") and lk.get("status") != "Solucionada" and seg_cfg().get("ativo", True):
+        tem_foto = bool((o.get("solucao") or {}).get("foto_file"))
+        await enviar(bot, int(g),
+                     f"📤 A #{num} está no Leankeep como <b>{esc(lk['numero'])}</b>. Dar baixa lá também (Solucionada)?"
+                     + ("" if tem_foto else "\n<i>O Leankeep exige a foto da resolução: no próximo passo eu peço.</i>"),
+                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                         "✅ Baixar no Leankeep", callback_data=f"sg|c|{num}|{legado_status('Solucionada')}"),
+                         InlineKeyboardButton("Agora não", callback_data="sg|x")]]))
 
 
 async def oc_avisar_reativada(bot, num, quem):
@@ -1183,7 +1195,8 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if oc_resolver(dados, num, quem):
                 if msg.photo:
                     dados["itens"][num]["solucao"] = {"chat_id": msg.chat.id, "msg_id": msg.message_id,
-                                                      "foto": True, "por": quem}
+                                                      "foto": True, "por": quem,
+                                                      "foto_file": msg.photo[-1].file_id}
                     gravar(ARQ_OCORR, dados)
                 await reagir(context.bot, msg, "👍")  # confirma sem poluir o grupo
                 await oc_concluida(context.bot, num)
@@ -1567,13 +1580,59 @@ async def lk_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
                   f"• Área: <b>{esc(nome_a.split('/')[0].title())}</b>\n• Prioridade: <b>{PRIOR_COD[pr]}</b>\n"
                   f"• Data/hora: {criada:%d/%m/%Y %H:%M}\n• Foto: {'sim' if o.get('foto_file') else 'não'}\n"
                   f"• Descrição: {esc((o.get('texto') or '(só foto)')[:300])}")
-        await mostrar(resumo, _kb_lk([[InlineKeyboardButton("✅ Registrar no Leankeep",
-                                                            callback_data=f"lk|s|{num}|{gid}|{aid}|{pr}")]], num))
+        if not aud_cfg().get("ativo", True):
+            await mostrar(resumo, _kb_lk([[InlineKeyboardButton("✅ Registrar no Leankeep",
+                                                                callback_data=f"lk|s|{num}|{gid}|{aid}|{pr}|0")]], num))
+            return
+        await mostrar(resumo + "\n\n⏳ <i>Conferindo a auditoria (batidão) da semana…</i>", None)
+        try:
+            sit = await aud_situacao()
+        except Exception as e:
+            log.warning("Auditoria: consulta falhou: %s", e)
+            sit = None
+        if sit is None:
+            linha = "• Auditoria: <i>não consegui consultar – dá para registrar avulsa</i>"
+            bts = [[InlineKeyboardButton("✅ Registrar avulsa", callback_data=f"lk|s|{num}|{gid}|{aid}|{pr}|0")]]
+        elif sit["atual"]:
+            a = sit["atual"]
+            linha = f"• Auditoria: <b>{esc(a['nome'])}</b> ({_dm(a['data'])}, nº {a['id']})"
+            bts = [[InlineKeyboardButton(f"✅ Registrar na {a['nome']}", callback_data=f"lk|s|{num}|{gid}|{aid}|{pr}|A")],
+                   [InlineKeyboardButton("Registrar avulsa (fora da auditoria)", callback_data=f"lk|s|{num}|{gid}|{aid}|{pr}|0")]]
+        else:
+            linha = f"• Auditoria: <i>ainda não há uma desta semana</i>"
+            bts = [[InlineKeyboardButton(f"🆕 Abrir {sit['proximo']} e registrar nela",
+                                         callback_data=f"lk|s|{num}|{gid}|{aid}|{pr}|N")],
+                   [InlineKeyboardButton("Registrar avulsa (fora da auditoria)", callback_data=f"lk|s|{num}|{gid}|{aid}|{pr}|0")]]
+        await mostrar(resumo + "\n" + linha, _kb_lk(bts, num))
     elif passo == "s":
         gid, aid, pr = p[3], p[4], p[5]
         nome_g, lst = areas.get(gid, ("?", []))
         nome_a = next((n for a, n in lst if a == aid), "?")
-        await mostrar("⏳ Registrando no Leankeep… (leva até 1 minuto)", None)
+        modo_aud = p[6] if len(p) > 6 else "0"
+        auditoria = None
+        if modo_aud == "A":
+            auditoria = (ler(ARQ_AUD, {}) or {}).get("atual")
+        elif modo_aud == "N":
+            nome_aud = (ler(ARQ_AUD, {}) or {}).get("proximo") or "Auditoria 1"
+            await mostrar(f"⏳ Abrindo a {esc(nome_aud)} no Leankeep…", None)
+            try:
+                auditoria = await aud_criar(nome_aud, hoje())
+            except Exception as e:
+                log.exception("Criar auditoria falhou")
+                await enviar(context.bot, q.message.chat.id,
+                             f"⚠️ <b>Não consegui abrir a {esc(nome_aud)}.</b>\n{esc(str(e)[:400])}",
+                             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                                 "🔁 Tentar de novo", callback_data=f"lk|c|{num}|{gid}|{aid}|{pr}")]]))
+                return
+            await enviar(context.bot, q.message.chat.id,
+                         f"✅ <b>{esc(auditoria['nome'])} aberta no Leankeep – nº {auditoria['id']}</b>")
+        if modo_aud in ("A", "N") and not auditoria:
+            await enviar(context.bot, q.message.chat.id, "⚠️ Perdi a referência da auditoria. Confira de novo:",
+                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                             "🔁 Conferir de novo", callback_data=f"lk|c|{num}|{gid}|{aid}|{pr}")]]))
+            return
+        await mostrar("⏳ Registrando no Leankeep… (leva até 1 minuto)"
+                      + (f"\nDentro da {esc(auditoria['nome'])}" if auditoria else ""), None)
         foto = None
         if o.get("foto_file"):
             try:
@@ -1586,23 +1645,10 @@ async def lk_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
         import legado
 
         def rodar():
-            if not LK.token:
-                LK.login()
-            args = ((gid, nome_g), (aid, nome_a), PRIOR_COD[pr], desc, foto,
-                    datetime.fromisoformat(o["criada"]).replace(tzinfo=None))
-            try:
-                return legado.registrar(LK.token, LK.refresh, *args, empresa_id=LK.empresa_id)
-            except RuntimeError as e:
-                # acesso caiu (ex.: o mesmo usuário entrou no navegador): renova e tenta UMA vez de novo.
-                # Só antes de salvar: erros do Salvar ("não salvou") não repetem, para não duplicar.
-                if not any(t in str(e) for t in ("não aceitou o acesso", "não achei o formulário", "logout")):
-                    raise
-                log.warning("Leankeep antigo: acesso caiu, renovando: %s", e)
-                try:
-                    LK.renovar()
-                except Exception:
-                    LK.login()
-                return legado.registrar(LK.token, LK.refresh, *args, empresa_id=LK.empresa_id)
+            # acesso caiu (ex.: o mesmo usuário entrou no navegador): renova e tenta UMA vez de novo.
+            # Só antes de salvar: erros do Salvar ("não salvou") não repetem, para não duplicar.
+            return _lk_chamar(legado.registrar, (gid, nome_g), (aid, nome_a), PRIOR_COD[pr], desc, foto,
+                              datetime.fromisoformat(o["criada"]).replace(tzinfo=None), auditoria=auditoria)
         try:
             numero = await asyncio.wait_for(asyncio.to_thread(rodar), 240)
         except Exception as e:
@@ -1616,13 +1662,380 @@ async def lk_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
         numero, _, aviso_foto = numero.partition("|")
         dados = oc_dados()
         dados["itens"][num]["leankeep"] = {"numero": numero, "em": datetime.now(FUSO).isoformat(timespec="minutes"),
-                                           "grupo": nome_g, "area": nome_a, "prioridade": PRIOR_COD[pr]}
+                                           "grupo": nome_g, "area": nome_a, "prioridade": PRIOR_COD[pr],
+                                           "auditoria": (auditoria or {}).get("nome")}
         gravar(ARQ_OCORR, dados)
         await enviar(context.bot, q.message.chat.id,
                      f"✅ <b>Ocorrência #{num} registrada no Leankeep: {esc(numero)}</b>\n"
                      f"{esc(nome_g.title())} › {esc(nome_a.split('/')[0].title())} · prioridade {PRIOR_COD[pr]}"
+                     + (f"\nDentro da <b>{esc(auditoria['nome'])}</b> (nº {auditoria['id']})" if auditoria else "")
                      + (f"\n\n⚠️ <i>Foi registrada {esc(aviso_foto[:250])}. Anexe a foto pelo Leankeep, se precisar.</i>"
-                        if aviso_foto else ""))
+                        if aviso_foto else ""),
+                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                         "🔧 Dar seguimento", callback_data=f"sg|m|{num}")]]))
+
+
+# =====================================================================
+#  Auditoria (batidão) no Leankeep: "Auditoria N" e ocorrências dentro dela
+# =====================================================================
+ARQ_AUD = DADOS / "auditoria.json"
+
+
+def aud_cfg() -> dict:
+    return CFG.get("auditoria", {}) or {}
+
+
+def _lk_chamar(fn, *a, **kw):
+    """Chama o Leankeep antigo; se o acesso caiu (mesmo usuário entrou no navegador), renova e tenta 1x."""
+    if not LK.token:
+        LK.login()
+    try:
+        return fn(LK.token, LK.refresh, *a, empresa_id=LK.empresa_id, **kw)
+    except RuntimeError as e:
+        if not any(t in str(e) for t in ("não aceitou o acesso", "não achei o formulário", "logout")):
+            raise
+        log.warning("Leankeep antigo: acesso caiu, renovando: %s", e)
+        try:
+            LK.renovar()
+        except Exception:
+            LK.login()
+        return fn(LK.token, LK.refresh, *a, empresa_id=LK.empresa_id, **kw)
+
+
+async def aud_situacao() -> dict:
+    """Consulta a lista do Leankeep: auditoria da semana (atual) e o próximo nome livre do mês."""
+    import legado
+    lista = await asyncio.wait_for(asyncio.to_thread(_lk_chamar, legado.listar_auditorias), 120)
+    sit = legado.situacao_auditoria(lista, hoje(), int(aud_cfg().get("dias_validade", 6)))
+    d = ler(ARQ_AUD, {})
+    d.update({"atual": sit["atual"], "proximo": sit["proximo"], "consultado": datetime.now(FUSO).isoformat(timespec="minutes")})
+    gravar(ARQ_AUD, d)
+    return sit
+
+
+async def aud_criar(nome: str, data: date) -> dict:
+    import legado
+    a = await asyncio.wait_for(asyncio.to_thread(_lk_chamar, legado.criar_auditoria, nome, data,
+                                                 str(aud_cfg().get("comentario", "Aberta pelo robô do Telegram"))), 240)
+    d = ler(ARQ_AUD, {})
+    d["atual"] = a
+    gravar(ARQ_AUD, d)
+    return a
+
+
+def _dm(iso: str) -> str:
+    return date.fromisoformat(iso).strftime("%d/%m")
+
+
+def _texto_aud_mes(sit: dict) -> str:
+    feitas = ", ".join(f"{a['nome']} ({_dm(a['data'])})" for a in sit.get("mes", [])) or "nenhuma ainda"
+    return f"Neste mês: {esc(feitas)}"
+
+
+async def aud_oferecer(bot, chat, forcar: bool = False):
+    """Pergunta no privado se abre a auditoria da semana (não pergunta se já existe uma)."""
+    try:
+        sit = await aud_situacao()
+    except Exception as e:
+        await enviar(bot, chat, f"⚠️ Não consegui consultar as auditorias no Leankeep.\n{esc(str(e)[:300])}")
+        return
+    if sit["atual"] and not forcar:
+        return
+    nome, dia = sit["proximo"], hoje()
+    linhas = []
+    if sit["atual"]:
+        linhas.append(f"A auditoria desta semana já existe: <b>{esc(sit['atual']['nome'])}</b> ({_dm(sit['atual']['data'])}) – nº {sit['atual']['id']}.")
+        linhas.append("As ocorrências que você registrar pelo robô entram nela.")
+    linhas.append(_texto_aud_mes(sit))
+    linhas.append(f"\nAbrir agora a <b>{esc(nome)}</b> com data de vistoria <b>{dia:%d/%m/%Y}</b>?")
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"🆕 Abrir {nome}", callback_data=f"au|c|{nome}|{dia:%Y%m%d}"),
+                                InlineKeyboardButton("Agora não", callback_data="au|x")]])
+    await enviar(bot, chat, "🔎 <b>BATIDÃO DA SEMANA (Auditoria Leankeep)</b>\n\n" + "\n".join(linhas), reply_markup=kb)
+
+
+async def auditoria_semanal(context: ContextTypes.DEFAULT_TYPE):
+    g = CFG.get("gestor_chat_id")
+    if g and MODO == "leankeep":
+        await aud_oferecer(context.bot, int(g))
+
+
+async def cmd_auditoria(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/auditoria – mostra a auditoria da semana e oferece abrir a próxima."""
+    if not _eh_gestor(update):
+        await update.effective_message.reply_text("Só o gestor pode usar este comando.")
+        return
+    await update.effective_message.reply_text("⏳ Consultando as auditorias no Leankeep…")
+    await aud_oferecer(context.bot, update.effective_chat.id, forcar=True)
+
+
+async def aud_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not _eh_gestor(update):
+        await q.answer("Só o gestor abre auditorias.", show_alert=True)
+        return
+    p = q.data.split("|")
+    if p[1] == "x":
+        await q.answer("Ok.")
+        try:
+            await q.edit_message_reply_markup(None)
+        except Exception:
+            pass
+        return
+    nome, dia = p[2], datetime.strptime(p[3], "%Y%m%d").date()
+    if p[1] == "c":  # confirmar
+        await q.answer()
+        txt = (f"<b>Confira antes de criar:</b>\n• Unidade: CB JUNDIAÍ\n• Nome: <b>{esc(nome)}</b>\n"
+               f"• Data da vistoria: <b>{dia:%d/%m/%Y}</b>\n• Responsável: Pedro Melo\n• Status: Pendente")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ Criar {nome}", callback_data=f"au|s|{nome}|{p[3]}"),
+                                    InlineKeyboardButton("✖️ Cancelar", callback_data="au|x")]])
+        await q.edit_message_text(limpar_texto(txt), parse_mode=ParseMode.HTML, reply_markup=kb)
+        return
+    if p[1] == "s":
+        await q.answer()
+        await q.edit_message_text(f"⏳ Criando a {nome} no Leankeep… (até 1 minuto)")
+        try:
+            a = await aud_criar(nome, dia)
+        except Exception as e:
+            log.exception("Criar auditoria falhou")
+            await enviar(context.bot, q.message.chat.id,
+                         f"⚠️ <b>Não consegui criar a {esc(nome)}.</b>\n{esc(str(e)[:400])}\n\n"
+                         f"<i>Confira na lista de Auditorias antes de tentar de novo.</i>",
+                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                             "🔁 Tentar de novo", callback_data=f"au|s|{nome}|{p[3]}")]]))
+            return
+        extra = " (já existia, não criei outra)" if a.get("ja_existia") else ""
+        await enviar(context.bot, q.message.chat.id,
+                     f"✅ <b>{esc(a['nome'])} criada no Leankeep – nº {a['id']}</b>{extra}\n"
+                     f"Data da vistoria: {_dm(a['data'])}\n\n"
+                     f"As ocorrências que você registrar pelo robô nesta semana vão entrar nela.")
+
+
+# =====================================================================
+#  Seguimento no Leankeep (Correções › Incluir Correção): status, descrição e foto
+# =====================================================================
+ARQ_SEG = DADOS / "seguimento.json"
+
+
+def seg_cfg() -> dict:
+    return CFG.get("seguimento", {}) or {}
+
+
+def legado_status(nome: str) -> str:
+    import legado
+    return next(c for c, n in legado.STATUS_CORRECAO.items() if n == nome)
+
+
+def _sg_alvo(ident: str):
+    """ident = nº do robô (31) ou nº do Leankeep (D171431). Devolve (numero_lk, item_do_robô, rótulo)."""
+    ident = ident.strip().lstrip("#").upper()
+    itens = oc_dados()["itens"]
+    if ident.isdigit():
+        o = itens.get(ident)
+        lk = ((o or {}).get("leankeep") or {}).get("numero")
+        return lk, o, f"#{ident}" + (f" ({lk})" if lk else "")
+    for n, o in itens.items():
+        if ((o.get("leankeep") or {}).get("numero") or "").upper() == ident:
+            return ident, o, f"#{n} ({ident})"
+    return ident, None, ident
+
+
+def _sg_extra(ident: str, cod: str | None = None, **novo) -> dict:
+    d = ler(ARQ_SEG, {})
+    e = d.setdefault("itens", {}).setdefault(ident, {})
+    if novo:
+        e.update(novo)
+        gravar(ARQ_SEG, d)
+    return e
+
+
+def _sg_foto(ident: str, o) -> tuple[str | None, str]:
+    e = _sg_extra(ident)
+    if e.get("foto_file"):
+        return e["foto_file"], "a que você mandou aqui"
+    sol = (o or {}).get("solucao") or {}
+    if sol.get("foto_file"):
+        return sol["foto_file"], "a da conclusão no grupo"
+    return None, ""
+
+
+async def sg_menu(bot, chat, ident, editar=None):
+    import legado
+    numero, o, rot = _sg_alvo(ident)
+    if not numero:
+        await enviar(bot, chat, f"A ocorrência {esc(rot)} ainda não foi registrada no Leankeep. "
+                                f"Use /registrar_leankeep {esc(ident)} primeiro.")
+        return
+    atual = ((o or {}).get("leankeep") or {}).get("status") or "Gerado O.S"
+    bts = [InlineKeyboardButton(("• " if n == atual else "") + n.replace("Encaminhada para ", "Enc. ")[:30],
+                                callback_data=f"sg|c|{ident}|{c}")
+           for c, n in legado.STATUS_CORRECAO.items() if c != "35788"]
+    linhas = [bts[i:i + 2] for i in range(0, len(bts), 2)] + [[InlineKeyboardButton("✖️ Cancelar", callback_data="sg|x")]]
+    txt = (f"🔧 <b>Seguimento da ocorrência {esc(rot)}</b>\n{esc(((o or {}).get('texto') or '')[:200])}\n\n"
+           f"Status atual: <b>{esc(atual)}</b>\n<b>Qual o novo status?</b>")
+    if editar:
+        await editar.edit_message_text(limpar_texto(txt), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(linhas))
+    else:
+        await enviar(bot, chat, txt, reply_markup=InlineKeyboardMarkup(linhas))
+
+
+async def sg_confirmar(bot, chat, ident, cod, editar=None):
+    import legado
+    numero, o, rot = _sg_alvo(ident)
+    nome = legado.STATUS_CORRECAO.get(cod, "?")
+    e = _sg_extra(ident)
+    desc = e.get("desc") if e.get("desc_cod") == cod else None
+    if not desc:
+        desc = nome if cod != legado.SOLUCIONADA else (
+            "Solucionada" + (f" – concluída por {(o.get('resolvida') or {}).get('por')}" if o and o.get("resolvida") else ""))
+    foto, de_onde = _sg_foto(ident, o)
+    precisa_foto = cod == legado.SOLUCIONADA
+    L = [f"🔧 <b>Seguimento – {esc(rot)}</b>", esc(((o or {}).get("texto") or "")[:200]), "",
+         f"• Novo status: <b>{esc(nome)}</b>", f"• Descrição: <i>{esc(desc[:300])}</i>",
+         f"• Data/hora: {datetime.now(FUSO):%d/%m/%Y %H:%M}"]
+    if foto:
+        L.append(f"• Foto: sim ({de_onde})")
+    elif precisa_foto:
+        L.append("• Foto da resolução: <b>falta</b> (obrigatória para Solucionada)")
+    L += ["", "<i>Para mudar a descrição, responda esta mensagem com o texto. "
+              + ("Para mandar a foto, responda esta mensagem com a foto.</i>" if precisa_foto or foto
+                 else "Se quiser anexar foto, responda com a foto.</i>")]
+    linha1 = ([InlineKeyboardButton("✅ Gravar no Leankeep", callback_data=f"sg|s|{ident}|{cod}")]
+              if (foto or not precisa_foto) else [])
+    kb = InlineKeyboardMarkup([l for l in (linha1, [InlineKeyboardButton("↩️ Outro status", callback_data=f"sg|m|{ident}"),
+                                                    InlineKeyboardButton("✖️ Cancelar", callback_data="sg|x")]) if l])
+    if editar:
+        await editar.edit_message_text(limpar_texto("\n".join(L)), parse_mode=ParseMode.HTML, reply_markup=kb)
+        mid = editar.message.message_id
+    else:
+        r = await enviar(bot, chat, "\n".join(L), reply_markup=kb)
+        mid = getattr(r, "message_id", None)
+    if mid:
+        d = ler(ARQ_SEG, {})
+        pend = d.setdefault("pend", {})
+        pend[str(mid)] = {"ident": ident, "cod": cod}
+        for k in list(pend)[:-30]:  # guarda só as últimas
+            pend.pop(k)
+        gravar(ARQ_SEG, d)
+
+
+async def sg_resposta_privada(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Resposta (texto ou foto) a uma tela de seguimento no privado. True se tratou."""
+    msg = update.effective_message
+    if not msg or not msg.reply_to_message or not _eh_gestor(update):
+        return False
+    p = (ler(ARQ_SEG, {}).get("pend") or {}).get(str(msg.reply_to_message.message_id))
+    if not p:
+        return False
+    ident, cod = p["ident"], p["cod"]
+    if msg.photo:
+        _sg_extra(ident, foto_file=msg.photo[-1].file_id)
+        if msg.caption:
+            _sg_extra(ident, desc=msg.caption.strip(), desc_cod=cod)
+    elif msg.text:
+        _sg_extra(ident, desc=msg.text.strip(), desc_cod=cod)
+    else:
+        return False
+    await sg_confirmar(context.bot, msg.chat.id, ident, cod)
+    return True
+
+
+async def sg_foto_privada(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await sg_resposta_privada(update, context)
+
+
+async def sg_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    import legado
+    q = update.callback_query
+    if not _eh_gestor(update):
+        await q.answer("Só o gestor dá seguimento no Leankeep.", show_alert=True)
+        return
+    p = q.data.split("|")
+    if p[1] == "x":
+        await q.answer("Ok.")
+        try:
+            await q.edit_message_reply_markup(None)
+        except Exception:
+            pass
+        return
+    ident = p[2]
+    await q.answer()
+    if p[1] == "m":
+        await sg_menu(context.bot, q.message.chat.id, ident, editar=None if q.message.photo else q)
+        return
+    cod = p[3]
+    if p[1] == "c":
+        await sg_confirmar(context.bot, q.message.chat.id, ident, cod, editar=None if q.message.photo else q)
+        return
+    if p[1] != "s":
+        return
+    numero, o, rot = _sg_alvo(ident)
+    nome = legado.STATUS_CORRECAO.get(cod, "?")
+    e = _sg_extra(ident)
+    desc = e.get("desc") if e.get("desc_cod") == cod else None
+    if not desc:
+        desc = nome if cod != legado.SOLUCIONADA else (
+            "Solucionada" + (f" – concluída por {(o.get('resolvida') or {}).get('por')}" if o and o.get("resolvida") else ""))
+    desc += " (pelo Telegram)"
+    foto_id, _ = _sg_foto(ident, o)
+    try:
+        await q.edit_message_text(f"⏳ Gravando o seguimento da {rot} no Leankeep… (até 1 minuto)")
+    except Exception:
+        pass
+    try:
+        foto = None
+        if foto_id:
+            f = await context.bot.get_file(foto_id)
+            foto = bytes(await f.download_as_bytearray())
+        res = await asyncio.wait_for(asyncio.to_thread(
+            _lk_chamar, legado.seguimento, numero, cod, desc, foto, datetime.now(FUSO).replace(tzinfo=None)), 240)
+    except Exception as ex:
+        log.exception("Seguimento no Leankeep falhou")
+        await enviar(context.bot, q.message.chat.id,
+                     f"⚠️ <b>Não consegui gravar o seguimento da {esc(rot)}.</b>\n{esc(str(ex)[:400])}\n\n"
+                     f"<i>Confira a ocorrência no Leankeep antes de tentar de novo.</i>",
+                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                         "🔁 Tentar de novo", callback_data=f"sg|c|{ident}|{cod}")]]))
+        return
+    _, _, aviso = res.partition("|")
+    if o:
+        dados = oc_dados()
+        for n, it in dados["itens"].items():
+            if it is not None and ((it.get("leankeep") or {}).get("numero") == numero):
+                it["leankeep"]["status"] = nome
+                it["leankeep"].setdefault("seguimentos", []).append(
+                    {"status": nome, "em": datetime.now(FUSO).isoformat(timespec="minutes")})
+        gravar(ARQ_OCORR, dados)
+    d = ler(ARQ_SEG, {})
+    d.get("itens", {}).pop(ident, None)
+    gravar(ARQ_SEG, d)
+    await enviar(context.bot, q.message.chat.id,
+                 f"✅ <b>Seguimento gravado no Leankeep – {esc(rot)}</b>\nNovo status: <b>{esc(nome)}</b>"
+                 + (" · com foto" if foto_id else "")
+                 + (f"\n\n⚠️ <i>{esc(aviso)}</i>" if aviso else ""),
+                 reply_markup=None if cod == legado.SOLUCIONADA else InlineKeyboardMarkup([[InlineKeyboardButton(
+                     "🔧 Outro seguimento", callback_data=f"sg|m|{ident}")]]))
+
+
+async def cmd_seguimento(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/seguimento 31  ou  /seguimento D171431  (sem número: lista as que estão no Leankeep e não solucionadas)."""
+    if not _eh_gestor(update):
+        await update.effective_message.reply_text("Só o gestor pode usar este comando.")
+        return
+    if context.args:
+        await sg_menu(context.bot, update.effective_chat.id, context.args[0])
+        return
+    abertas = sorted([o for o in oc_dados()["itens"].values()
+                      if (o.get("leankeep") or {}).get("numero") and (o["leankeep"].get("status") != "Solucionada")],
+                     key=lambda o: -o["num"])[:10]
+    if not abertas:
+        await update.effective_message.reply_text(
+            "Nenhuma ocorrência registrada pelo robô está pendente no Leankeep.\n"
+            "Para outra, use: /seguimento D171431")
+        return
+    bts = [[InlineKeyboardButton(f"#{o['num']} {o['leankeep']['numero']} · {o['leankeep'].get('status') or 'Gerado O.S'}"[:60],
+                                 callback_data=f"sg|m|{o['num']}")] for o in abertas]
+    await enviar(context.bot, update.effective_chat.id, "🔧 <b>Dar seguimento em qual ocorrência?</b>",
+                 reply_markup=InlineKeyboardMarkup(bts))
 
 
 async def cmd_registrar_leankeep(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1695,7 +2108,8 @@ async def oc_botao_pergunta(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         dados = oc_dados()
         dados["itens"][num]["solucao"] = {"chat_id": item["chat_id"], "msg_id": item["msg_ids"][0],
-                                          "foto": item.get("foto"), "por": item.get("autor")}
+                                          "foto": item.get("foto"), "por": item.get("autor"),
+                                          "foto_file": item.get("foto_file")}
         gravar(ARQ_OCORR, dados)
         from types import SimpleNamespace as _N
         await reagir(context.bot, _N(chat=_N(id=item["chat_id"]), message_id=item["msg_ids"][0]), "👍")
@@ -4167,6 +4581,8 @@ async def msg_privada(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     if not msg or not msg.text or not _eh_gestor(update):
         return
+    if await sg_resposta_privada(update, context):
+        return
     pend = al_pendente(update.effective_user.id)
     if not pend or not pend.get("aguardando"):
         return
@@ -4337,6 +4753,11 @@ def montar_app(token: str) -> Application:
     app.add_handler(CommandHandler("cardapio", cmd_cardapio))
     app.add_handler(CommandHandler("registrar_leankeep", cmd_registrar_leankeep))
     app.add_handler(CallbackQueryHandler(lk_botao, pattern=r"^lk\|"))
+    app.add_handler(CommandHandler("auditoria", cmd_auditoria))
+    app.add_handler(CommandHandler("seguimento", cmd_seguimento))
+    app.add_handler(CallbackQueryHandler(sg_botao, pattern=r"^sg\|"))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.PHOTO & filters.REPLY, sg_foto_privada))
+    app.add_handler(CallbackQueryHandler(aud_botao, pattern=r"^au\|"))
     app.add_handler(CommandHandler("cardapio_item", cmd_cardapio_item))
     app.add_handler(CallbackQueryHandler(botao_cardapio, pattern=r"^cd\|"))
     app.add_handler(CallbackQueryHandler(botao_reativar, pattern=r"^ocr\|"))
