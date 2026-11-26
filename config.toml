@@ -599,7 +599,7 @@ frequencia = "semestral"
 # ------------------------------------------------------------
 [cardapio]
 ativo = true
-horario = "09:00"
+horarios = ["10:00"]           # todo dia; a mensagem tem o botão 🔄 Atualizar agora para conferir na hora
 store_id = 1217             # código da CB Jundiaí no cardápio da Tagme
 max_cartoes = 15            # acima disso, o resto vem em lista
 

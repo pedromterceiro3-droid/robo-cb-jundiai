@@ -773,7 +773,10 @@ def envios_diarios():
         lst.append(("lembrete_relogio", lembrete_relogio, hora(rel_cfg().get("horario", "23:00")),
                     TODOS_DIAS, 1))
     if card_cfg().get("ativo", True):
-        lst.append(("cardapio", cardapio_diario, hora(card_cfg().get("horario", "09:00")), TODOS_DIAS, 10))
+        horarios = card_cfg().get("horarios") or [card_cfg().get("horario", "09:00")]
+        for i, h in enumerate(horarios):  # ex.: 10:00 e 18:00 – cada horário compara com a conferência anterior
+            lst.append(("cardapio" if i == 0 else f"cardapio_{h.replace(':', '')}", cardapio_diario, hora(h),
+                        TODOS_DIAS, 6))
     if aud_cfg().get("ativo", True) and aud_cfg().get("lembrete_semanal", True) and MODO == "leankeep":
         dia_txt, hora_txt = str(aud_cfg().get("quando", "seg 09:30")).split()
         lst.append(("auditoria_semanal", auditoria_semanal, hora(hora_txt), ((DIAS[dia_txt] + 1) % 7,), 12))
@@ -3795,7 +3798,7 @@ async def cmd_configurar_cardapio(update: Update, context: ContextTypes.DEFAULT_
     topico = msg.message_thread_id if msg.is_topic_message else 0
     salvar_ajuste(card_grupo_chat_id=update.effective_chat.id, card_topico_id=topico)
     await msg.reply_text("✅ Pronto! A conferência diária do cardápio da Tagme (o que saiu, entrou e mudou de preço) "
-                         "vai chegar aqui, todo dia às " + str(card_cfg().get("horario", "09:00")) + ".")
+                         "vai chegar aqui, todo dia às " + card_horarios_txt() + ".")
 
 async def cmd_configurar_tagme(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -3821,6 +3824,7 @@ def _reenvios():
         "reservas": ("📅 Reservas da Tagme (hoje e amanhã)", resumo_tagme, "tópico Bot da Tagme"),
         "relogio": ("⏰ Lembrete dos relógios", lembrete_relogio, "grupo de fechamento"),
         "semanal": ("📈 Resumo semanal", enviar_semanal, "seu privado"),
+        "cardapio": ("🍽️ Cardápio da Tagme: última conferência", cardapio_reenviar, "tópico Cardápio Tagme"),
     }
     for i, cob in enumerate(CFG.get("cobrancas", [])):
         r[f"cob{i}"] = (f"🔔 Cobrança: {cob['nome']}", None, "tópico Leankeep diário")
@@ -3835,6 +3839,11 @@ ARQ_CARDAPIO = DADOS / "cardapio.json"
 
 def card_cfg() -> dict:
     return CFG.get("cardapio", {}) or {}
+
+
+def card_horarios_txt() -> str:
+    h = card_cfg().get("horarios") or [card_cfg().get("horario", "09:00")]
+    return " e ".join(h)
 
 
 async def cartao_cardapio(bot, chat, item: dict, tipo: str, topico=None):
@@ -3885,12 +3894,12 @@ def texto_mudancas_cardapio(dif: dict, total_pratos: int, desde: str) -> str:
 def _enviar(*a, **kw):
     return enviar(*a, **kw)
 
-async def cardapio_diario(context: ContextTypes.DEFAULT_TYPE, chat=None):
+async def cardapio_diario(context: ContextTypes.DEFAULT_TYPE, chat=None, topico_chat=None):
     """Compara o cardápio da Tagme de hoje com o da última conferência e explica o que mudou (privado)."""
     import cardapio as CD
     topico = None
     if chat:
-        destino = chat
+        destino, topico = chat, topico_chat
     elif CFG.get("card_grupo_chat_id"):  # tópico "Cardápio Tagme" (configurado com /configurar_cardapio)
         destino, topico = CFG["card_grupo_chat_id"], CFG.get("card_topico_id") or None
     else:
@@ -3919,7 +3928,7 @@ async def cardapio_diario(context: ContextTypes.DEFAULT_TYPE, chat=None):
         await enviar(context.bot, destino,
                      f"📖 <b>Cardápio da Tagme – CB Jundiaí</b>\n\n"
                      f"Pronto, já conferi o cardápio de hoje: <b>{pratos} pratos e bebidas</b>.\n\n"
-                     f"A partir de agora, todo dia às {esc(card_cfg().get('horario', '09:00'))} eu te conto o que mudou:\n"
+                     f"A partir de agora, todo dia às {esc(card_horarios_txt())} eu te conto o que mudou:\n"
                      f"• o que <b>saiu</b> do cardápio 🔴\n• o que <b>entrou</b> no cardápio 🟢\n"
                      f"• o que <b>mudou de preço</b> 🟣\n\n"
                      f"Se nada mudar, não mando mensagem.\n\n"
@@ -3933,19 +3942,54 @@ async def cardapio_diario(context: ContextTypes.DEFAULT_TYPE, chat=None):
     if not n:
         if chat:
             await enviar(context.bot, destino, f"🍽️ Cardápio da Tagme: <b>nada mudou</b> desde a conferência de {esc(desde)}.\n"
-                                               f"<i>{pratos} pratos e bebidas no cardápio.</i>")
+                                               f"<i>{pratos} pratos e bebidas no cardápio.</i>",
+                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                             "🔄 Atualizar agora", callback_data="cd|agora")]]))
         return
     d = ler(ARQ_CARDAPIO, {})
     d["ultima_dif"] = dif
+    d["ultima_dif_info"] = {"desde": desde, "pratos": pratos, "em": datetime.now(FUSO).isoformat(timespec="minutes")}
     gravar(ARQ_CARDAPIO, d)
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("📷 Ver com fotos", callback_data="cd|fotos"),
-                                InlineKeyboardButton("🔗 Abrir no GIA", url=CD.LINK_GIA)]])
+                                InlineKeyboardButton("🔗 Abrir no GIA", url=CD.LINK_GIA)],
+                               [InlineKeyboardButton("🔄 Atualizar agora", callback_data="cd|agora")]])
     await enviar(context.bot, destino, texto_mudancas_cardapio(dif, pratos, desde), reply_markup=kb)
 
+
+
+async def cardapio_reenviar(context: ContextTypes.DEFAULT_TYPE, chat=None):
+    """Manda de novo a última mensagem de mudanças do cardápio (mesmo destino da conferência)."""
+    import cardapio as CD
+    d = ler(ARQ_CARDAPIO, {}) or {}
+    dif, info = d.get("ultima_dif") or {}, d.get("ultima_dif_info") or {}
+    if chat:
+        destino, topico = chat, None
+    elif CFG.get("card_grupo_chat_id"):
+        destino, topico = CFG["card_grupo_chat_id"], CFG.get("card_topico_id") or None
+    else:
+        destino, topico = CFG.get("gestor_chat_id"), None
+    if not any(dif.values()):
+        await enviar(context.bot, destino, "🍽️ Cardápio da Tagme: não há mudança registrada para reenviar.",
+                     message_thread_id=topico)
+        return
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("📷 Ver com fotos", callback_data="cd|fotos"),
+                                InlineKeyboardButton("🔗 Abrir no GIA", url=CD.LINK_GIA)],
+                               [InlineKeyboardButton("🔄 Atualizar agora", callback_data="cd|agora")]])
+    texto = texto_mudancas_cardapio(dif, info.get("pratos", 0), info.get("desde", "?"))
+    texto = texto.replace("conferência de ?", "conferência anterior")
+    if info.get("em"):
+        em = datetime.fromisoformat(info["em"])
+        texto = texto.replace(f"({datetime.now(FUSO):%d/%m})", f"({em:%d/%m às %H:%M})", 1)
+    await enviar(context.bot, destino, texto, reply_markup=kb, message_thread_id=topico)
 
 async def botao_cardapio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """📷 Ver com fotos: manda um cartão (foto, código, descrição, preço) para cada mudança."""
     q = update.callback_query
+    if q.data == "cd|agora":  # 🔄 Atualizar agora: confere o cardápio neste momento, no mesmo chat/tópico
+        await q.answer("Conferindo o cardápio agora…")
+        await cardapio_diario(context, chat=q.message.chat.id,
+                              topico_chat=q.message.message_thread_id if q.message.is_topic_message else None)
+        return
     dif = (ler(ARQ_CARDAPIO, {}) or {}).get("ultima_dif") or {}
     if not any(dif.values()):
         await q.answer("Não há mudanças para mostrar.")
