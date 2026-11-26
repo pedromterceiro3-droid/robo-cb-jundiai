@@ -303,7 +303,7 @@ class Legado:
         cfgm = re.search(r'"_serializedConfiguration"\s*:\s*"([^"]+)"', self.html)
         if not cfgm:
             raise RuntimeError("não achei o componente de foto no formulário")
-        config = cfgm.group(1).replace("\\/", "/")
+        config = json.loads('"' + cfgm.group(1) + '"')  # desfaz os escapes do JSON (\/, \u002b…)
         uid = f"{uuid.uuid4()}{'.png' if 'png' in tipo else '.jpg'}"
         meta = {"TotalChunks": 1, "ChunkIndex": 0, "TotalFileSize": len(conteudo), "UploadID": uid}
         meta_txt = json.dumps(meta, separators=(",", ":"))
@@ -313,8 +313,11 @@ class Legado:
                                  "metadata": meta_txt},
                            files={"file": (nome_arquivo, conteudo, tipo)},
                            headers={"Referer": quote(self.action, safe=":/?&=%#;+,@!$'()*~.-_")})
-        r.raise_for_status()
-        j = r.json()
+        try:
+            j = r.json()
+        except Exception:
+            corpo = " ".join(unescape(re.sub(r"<[^>]+>", " ", r.text)).split())
+            raise RuntimeError(f"upload da foto respondeu {r.status_code}: {corpo[:160] or '(vazio)'}")
         if "fileInfo" not in j:
             raise RuntimeError(f"o upload da foto não foi aceito: {r.text[:150]}")
         estado = {"isEnabled": "true", "uploadedFiles": [{"fileInfo": j["fileInfo"], "metaData": j["metaData"]}]}
@@ -357,9 +360,15 @@ def registrar(token: str, refresh: str | None, grupo: tuple[str, str], area: tup
     if not lg.escolher_area(*area):
         raise RuntimeError(f"o Leankeep não aceitou a área {area[1]}")
     lg.preencher(descricao, prioridade, quando)
+    aviso_foto = ""
     if foto:
-        lg.enviar_foto(foto)
-    return lg.salvar()
+        try:
+            lg.enviar_foto(foto)
+        except Exception as e:  # sem a foto, registra mesmo assim e avisa
+            log.warning("Leankeep: foto não subiu: %s", e)
+            aviso_foto = f"sem foto ({e})"
+    numero = lg.salvar()
+    return f"{numero}|{aviso_foto}" if aviso_foto else numero
 
 
 def testar(token: str, refresh: str | None = None, max_grupos: int = 20, empresa_id: str = "3802",

@@ -1600,13 +1600,16 @@ async def lk_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
                          reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
                              "🔁 Tentar de novo", callback_data=f"lk|c|{num}|{gid}|{aid}|{pr}")]]))
             return
+        numero, _, aviso_foto = numero.partition("|")
         dados = oc_dados()
         dados["itens"][num]["leankeep"] = {"numero": numero, "em": datetime.now(FUSO).isoformat(timespec="minutes"),
                                            "grupo": nome_g, "area": nome_a, "prioridade": PRIOR_COD[pr]}
         gravar(ARQ_OCORR, dados)
         await enviar(context.bot, q.message.chat.id,
                      f"✅ <b>Ocorrência #{num} registrada no Leankeep: {esc(numero)}</b>\n"
-                     f"{esc(nome_g.title())} › {esc(nome_a.split('/')[0].title())} · prioridade {PRIOR_COD[pr]}")
+                     f"{esc(nome_g.title())} › {esc(nome_a.split('/')[0].title())} · prioridade {PRIOR_COD[pr]}"
+                     + (f"\n\n⚠️ <i>Foi registrada {esc(aviso_foto[:250])}. Anexe a foto pelo Leankeep, se precisar.</i>"
+                        if aviso_foto else ""))
 
 
 async def cmd_registrar_leankeep(update: Update, context: ContextTypes.DEFAULT_TYPE):
