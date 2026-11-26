@@ -293,7 +293,73 @@ class Legado:
         return itens
 
 
+    # ---------- preencher e salvar ----------
+    def escolher_area(self, aid: str, nome: str) -> bool:
+        a = self.c("area")
+        return self._escolher("area", aid, nome, lambda: aid in self.campos.get(a + "$Value", ""))
+
+    def enviar_foto(self, conteudo: bytes, nome_arquivo: str = "foto.jpg", tipo: str = "image/jpeg"):
+        """Sobe a foto pelo componente de upload do formulário (Telerik RadAsyncUpload)."""
+        cfgm = re.search(r'"_serializedConfiguration"\s*:\s*"([^"]+)"', self.html)
+        if not cfgm:
+            raise RuntimeError("não achei o componente de foto no formulário")
+        config = cfgm.group(1).replace("\\/", "/")
+        uid = f"{uuid.uuid4()}{'.png' if 'png' in tipo else '.jpg'}"
+        meta = {"TotalChunks": 1, "ChunkIndex": 0, "TotalFileSize": len(conteudo), "UploadID": uid}
+        meta_txt = json.dumps(meta, separators=(",", ":"))
+        r = self.http.post("/Telerik.Web.UI.WebResource.axd?type=rau",
+                           data={"rauPostData": f"{config}&{meta_txt}", "fileName": nome_arquivo, "contentType": tipo,
+                                 "lastModifiedDate": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                                 "metadata": meta_txt},
+                           files={"file": (nome_arquivo, conteudo, tipo)},
+                           headers={"Referer": quote(self.action, safe=":/?&=%#;+,@!$'()*~.-_")})
+        r.raise_for_status()
+        j = r.json()
+        if "fileInfo" not in j:
+            raise RuntimeError(f"o upload da foto não foi aceito: {r.text[:150]}")
+        estado = {"isEnabled": "true", "uploadedFiles": [{"fileInfo": j["fileInfo"], "metaData": j["metaData"]}]}
+        self.campos[self.c("foto_state")] = json.dumps(estado, separators=(",", ":"))
+
+    def preencher(self, descricao: str, prioridade: str, quando: datetime | None = None):
+        q = quando or datetime.now()
+        self.campos[self.c("descricao")] = descricao[:3900]
+        self.campos[self.c("prioridade")] = PRIORIDADES.get(prioridade, prioridade)
+        self.campos[self.c("data")] = q.strftime("%d/%m/%Y")
+        self.campos[self.c("hora")] = q.strftime("%H:%M")
+
+    def salvar(self) -> str:
+        """Clica em SALVAR. Devolve o número da ocorrência (ex.: D171399)."""
+        alvo = f"{self.pre}$PageContent$SaveButton$_Button"
+        dados = dict(self.campos)
+        dados["__EVENTTARGET"], dados["__EVENTARGUMENT"] = alvo, ""
+        r = self.http.post(self.action, data=dados, headers={"Referer": quote(self.action, safe=":/?&=%#;+,@!$'()*~.-_")})
+        r.raise_for_status()
+        texto = " ".join(unescape(re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ", r.text,
+                                         flags=re.S | re.I)).split())
+        m = re.search(r"N[ºo°]\s*Ocorr[eê]ncia\s*([A-Z]\d{5,7})", texto) or re.search(r"\b([A-Z]\d{6})\b", texto)
+        if m:
+            return m.group(1)
+        erros = re.findall(r"(?i)((?:campo|preencha|obrigat|inv[aá]lid|erro)[^.]{0,120})", texto)
+        raise RuntimeError("o Leankeep não confirmou o registro. " + (" | ".join(erros[:3]) or texto[:250]))
+
+
 UNIDADE = ("57896", "CB JUNDIAÍ")
+
+
+def registrar(token: str, refresh: str | None, grupo: tuple[str, str], area: tuple[str, str], prioridade: str,
+              descricao: str, foto: bytes | None = None, quando: datetime | None = None,
+              empresa_id: str = "3802", unidade: tuple[str, str] = UNIDADE) -> str:
+    """Cria a ocorrência no Leankeep (como o formulário do site). Devolve o número."""
+    lg = Legado(token, refresh, empresa_id).abrir()
+    lg.escolher_unidade(*unidade)
+    if not lg.escolher_grupo(*grupo):
+        raise RuntimeError(f"o Leankeep não aceitou o grupo {grupo[1]}")
+    if not lg.escolher_area(*area):
+        raise RuntimeError(f"o Leankeep não aceitou a área {area[1]}")
+    lg.preencher(descricao, prioridade, quando)
+    if foto:
+        lg.enviar_foto(foto)
+    return lg.salvar()
 
 
 def testar(token: str, refresh: str | None = None, max_grupos: int = 20, empresa_id: str = "3802",

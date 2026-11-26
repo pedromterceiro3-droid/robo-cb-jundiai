@@ -1278,10 +1278,12 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cand["msg_ids"].append(msg.message_id)
             cand["texto"] = (cand["texto"] + " " + texto).strip() if texto else cand["texto"]
             cand["foto"] = cand["foto"] or bool(msg.photo)
+            cand["foto_file"] = cand.get("foto_file") or (msg.photo[-1].file_id if msg.photo else None)
             cand["album"] = cand.get("album") or msg.media_group_id
             cand["ultima_msg"] = enviada.isoformat(timespec="seconds")
         else:
             cands[chave_c] = {"msg_ids": [msg.message_id], "texto": texto, "foto": bool(msg.photo),
+                              "foto_file": msg.photo[-1].file_id if msg.photo else None,
                               "album": msg.media_group_id,
                               "criada": enviada.isoformat(timespec="minutes"),
                               "ultima_msg": enviada.isoformat(timespec="seconds")}
@@ -1306,7 +1308,8 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chave_p = f"{msg.chat.id}:{msg.message_id}"
             pergs[chave_p] = {"chat_id": msg.chat.id, "topico": msg.message_thread_id if msg.is_topic_message else 0,
                               "msg_ids": list(c["msg_ids"]), "album": c.get("album"), "autor": quem, "autor_id": uid,
-                              "texto": c.get("texto", ""), "foto": c.get("foto"), "criada": c["criada"],
+                              "texto": c.get("texto", ""), "foto": c.get("foto"), "foto_file": c.get("foto_file"),
+                              "criada": c["criada"],
                               "ultima_msg": enviada.isoformat(timespec="seconds"), "resolvida": None}
             gravar(ARQ_OCORR, dados)
             r = await enviar(context.bot, msg.chat.id, f"📷 {esc(quem.split()[0])}, do que se trata esta foto?",
@@ -1323,6 +1326,7 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return  # "bom dia", "ok"… não viram ocorrência
 
     ids, foto, criada, album = [msg.message_id], bool(msg.photo), enviada.isoformat(timespec="minutes"), msg.media_group_id
+    foto_file = msg.photo[-1].file_id if msg.photo else None
     if cand:  # junta a foto (ou texto) mandada pouco antes, sem palavra-chave
         cands.pop(chave_c)
         # a pergunta "do que se trata esta foto?" já não precisa: o texto com a palavra-chave respondeu
@@ -1337,6 +1341,7 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ids = cand["msg_ids"] + ids
         texto = (cand["texto"] + " " + texto).strip() if cand["texto"] else texto
         criada, album = cand["criada"], cand.get("album") or album
+        foto_file = cand.get("foto_file") or foto_file
         if cand["foto"]:
             foto = True
         elif msg.photo:
@@ -1345,7 +1350,7 @@ async def oc_mensagem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dados["candidatas"] = cands
     item = {"chat_id": msg.chat.id, "topico": msg.message_thread_id if msg.is_topic_message else 0,
             "msg_ids": ids, "album": album, "autor": quem, "autor_id": uid, "texto": texto,
-            "foto": foto, "criada": criada, "ultima_msg": enviada.isoformat(timespec="seconds"),
+            "foto": foto, "foto_file": foto_file, "criada": criada, "ultima_msg": enviada.isoformat(timespec="seconds"),
             "resolvida": None}
 
     if nivel == "pergunta":
@@ -1410,6 +1415,7 @@ async def oc_abrir_por_resposta(bot, dados: dict, msg, alvo, quem: str):
     item = {"chat_id": chat, "topico": msg.message_thread_id if msg.is_topic_message else 0,
             "msg_ids": ids, "album": album, "autor": autor,
             "autor_id": alvo.from_user.id if alvo.from_user else None, "texto": texto, "foto": bool(foto),
+            "foto_file": (base or {}).get("foto_file") or (alvo.photo[-1].file_id if alvo.photo else None),
             "criada": criada, "ultima_msg": enviada.isoformat(timespec="seconds"), "resolvida": None}
     if autor != quem:
         item["aberta_por"] = quem
@@ -1447,7 +1453,171 @@ async def oc_registrar(bot, dados: dict, item: dict) -> str:
         dados = oc_dados()
         dados["itens"][num]["msg_robo"] = r.message_id
         gravar(ARQ_OCORR, dados)
+    await lk_oferecer(bot, num)
     return num
+
+
+# =====================================================================
+#  Registrar a ocorrência no Leankeep (botões no privado do gestor)
+# =====================================================================
+def lk_reg_cfg() -> dict:
+    return CFG.get("leankeep_registro", {}) or {}
+
+
+PRIOR_COD = {"A": "Alta", "M": "Média", "B": "Baixa"}
+
+
+def lk_areas() -> dict:
+    """Grupos e áreas da unidade (lidos pelo /testar_leankeep): {gid: (nome, [(aid, nome), ...])}"""
+    res = (ler(ARQ_LK_AREAS, {}) or {}).get("grupos") or {}
+    out = {}
+    for chave, areas in res.items():
+        gid, nome = chave.split("|", 1)
+        if isinstance(areas, list):
+            out[gid] = (nome, [tuple(a) for a in areas])
+    return out
+
+
+async def lk_oferecer(bot, num, chat=None):
+    """Cartão da ocorrência no privado do gestor com o botão Registrar no Leankeep."""
+    g = chat or CFG.get("gestor_chat_id")
+    if not g or not lk_reg_cfg().get("ativo", True) or MODO != "leankeep":
+        return
+    o = oc_dados()["itens"].get(str(num))
+    if not o:
+        return
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("📤 Registrar no Leankeep", callback_data=f"lk|g|{num}"),
+                                InlineKeyboardButton("Agora não", callback_data=f"lk|x|{num}")]])
+    texto = (f"🆕 <b>Ocorrência #{num}</b> – {esc(o.get('autor', '?'))}\n\n{esc((o.get('texto') or '(só foto)')[:500])}\n\n"
+             f"<i>Quer registrar no Leankeep?</i>")
+    await oc_enviar_com_foto(bot, int(g), None, o, texto, kb)
+
+
+def _kb_lk(linhas, num):
+    linhas = [l for l in linhas if l]
+    linhas.append([InlineKeyboardButton("✖️ Cancelar", callback_data=f"lk|x|{num}")])
+    return InlineKeyboardMarkup(linhas)
+
+
+async def lk_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not _eh_gestor(update):
+        await q.answer("Só o gestor registra no Leankeep.", show_alert=True)
+        return
+    p = q.data.split("|")
+    passo, num = p[1], p[2]
+    o = oc_dados()["itens"].get(num)
+    if not o:
+        await q.answer("Ocorrência não encontrada.")
+        return
+    titulo = f"📤 <b>Registrar a ocorrência #{num} no Leankeep</b>\n{esc((o.get('texto') or '(só foto)')[:200])}\n\n"
+
+    async def mostrar(txt, kb):
+        if passo == "g":  # 1º passo: mensagem nova (o cartão com foto fica como está)
+            await enviar(context.bot, q.message.chat.id, titulo + txt, reply_markup=kb)
+            try:
+                await q.edit_message_reply_markup(None)
+            except Exception:
+                pass
+        else:
+            try:
+                await q.edit_message_text(limpar_texto(titulo + txt), parse_mode=ParseMode.HTML, reply_markup=kb)
+            except Exception:
+                await enviar(context.bot, q.message.chat.id, titulo + txt, reply_markup=kb)
+
+    if passo == "x":
+        await q.answer("Ok.")
+        try:
+            await q.edit_message_reply_markup(None)
+        except Exception:
+            pass
+        return
+    if o.get("leankeep") and passo in ("g", "s"):
+        await q.answer(f"Já registrada no Leankeep: {o['leankeep'].get('numero')}", show_alert=True)
+        return
+    areas = lk_areas()
+    if not areas:
+        await q.answer("Primeiro rode /testar_leankeep (carrega os grupos e áreas).", show_alert=True)
+        return
+    await q.answer()
+    if passo == "g":
+        bts = [InlineKeyboardButton(nome.title(), callback_data=f"lk|a|{num}|{gid}") for gid, (nome, _) in areas.items()]
+        await mostrar("<b>1/3 – Grupo de áreas?</b>", _kb_lk([bts[i:i + 2] for i in range(0, len(bts), 2)], num))
+    elif passo == "a":
+        gid = p[3]
+        nome_g, lst = areas.get(gid, ("?", []))
+        bts = [InlineKeyboardButton(n.split("/")[0].title()[:30], callback_data=f"lk|p|{num}|{gid}|{aid}") for aid, n in lst]
+        await mostrar(f"Grupo: <b>{esc(nome_g.title())}</b>\n\n<b>2/3 – Área?</b>",
+                      _kb_lk([bts[i:i + 2] for i in range(0, len(bts), 2)], num))
+    elif passo == "p":
+        gid, aid = p[3], p[4]
+        nome_g, lst = areas.get(gid, ("?", []))
+        nome_a = next((n for a, n in lst if a == aid), "?")
+        bts = [InlineKeyboardButton(f"{e} {PRIOR_COD[c]}", callback_data=f"lk|c|{num}|{gid}|{aid}|{c}")
+               for c, e in (("A", "🔴"), ("M", "🟡"), ("B", "🟢"))]
+        await mostrar(f"Grupo: <b>{esc(nome_g.title())}</b> · Área: <b>{esc(nome_a.split('/')[0].title())}</b>\n\n"
+                      f"<b>3/3 – Prioridade?</b>", _kb_lk([bts], num))
+    elif passo == "c":
+        gid, aid, pr = p[3], p[4], p[5]
+        nome_g, lst = areas.get(gid, ("?", []))
+        nome_a = next((n for a, n in lst if a == aid), "?")
+        criada = datetime.fromisoformat(o["criada"])
+        resumo = (f"<b>Confira antes de enviar:</b>\n"
+                  f"• Unidade: CB JUNDIAÍ\n• Grupo: <b>{esc(nome_g.title())}</b>\n"
+                  f"• Área: <b>{esc(nome_a.split('/')[0].title())}</b>\n• Prioridade: <b>{PRIOR_COD[pr]}</b>\n"
+                  f"• Data/hora: {criada:%d/%m/%Y %H:%M}\n• Foto: {'sim' if o.get('foto_file') else 'não'}\n"
+                  f"• Descrição: {esc((o.get('texto') or '(só foto)')[:300])}")
+        await mostrar(resumo, _kb_lk([[InlineKeyboardButton("✅ Registrar no Leankeep",
+                                                            callback_data=f"lk|s|{num}|{gid}|{aid}|{pr}")]], num))
+    elif passo == "s":
+        gid, aid, pr = p[3], p[4], p[5]
+        nome_g, lst = areas.get(gid, ("?", []))
+        nome_a = next((n for a, n in lst if a == aid), "?")
+        await mostrar("⏳ Registrando no Leankeep… (leva até 1 minuto)", None)
+        foto = None
+        if o.get("foto_file"):
+            try:
+                f = await context.bot.get_file(o["foto_file"])
+                foto = bytes(await f.download_as_bytearray())
+            except Exception as e:
+                log.warning("Leankeep: não consegui baixar a foto da #%s: %s", num, e)
+        desc = (o.get("texto") or "Ocorrência registrada pelo Telegram").strip()
+        desc += f"\n(Registrada pelo Telegram – ocorrência #{num}, por {o.get('autor', '?')})"
+        import legado
+
+        def rodar():
+            if not LK.token:
+                LK.login()
+            return legado.registrar(LK.token, LK.refresh, (gid, nome_g), (aid, nome_a), PRIOR_COD[pr], desc, foto,
+                                    datetime.fromisoformat(o["criada"]).replace(tzinfo=None), empresa_id=LK.empresa_id)
+        try:
+            numero = await asyncio.wait_for(asyncio.to_thread(rodar), 240)
+        except Exception as e:
+            log.exception("Registro no Leankeep falhou")
+            await enviar(context.bot, q.message.chat.id,
+                         f"⚠️ <b>Não consegui registrar a #{num} no Leankeep.</b>\n{esc(str(e)[:400])}\n\n"
+                         f"<i>Nada foi salvo pela metade? Confira na Lista de Ocorrências antes de tentar de novo.</i>",
+                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                             "🔁 Tentar de novo", callback_data=f"lk|c|{num}|{gid}|{aid}|{pr}")]]))
+            return
+        dados = oc_dados()
+        dados["itens"][num]["leankeep"] = {"numero": numero, "em": datetime.now(FUSO).isoformat(timespec="minutes"),
+                                           "grupo": nome_g, "area": nome_a, "prioridade": PRIOR_COD[pr]}
+        gravar(ARQ_OCORR, dados)
+        await enviar(context.bot, q.message.chat.id,
+                     f"✅ <b>Ocorrência #{num} registrada no Leankeep: {esc(numero)}</b>\n"
+                     f"{esc(nome_g.title())} › {esc(nome_a.split('/')[0].title())} · prioridade {PRIOR_COD[pr]}")
+
+
+async def cmd_registrar_leankeep(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/registrar_leankeep 12 – manda de novo o cartão da ocorrência #12 com o botão de registrar."""
+    if not _eh_gestor(update):
+        await update.effective_message.reply_text("Só o gestor pode usar este comando.")
+        return
+    if not context.args:
+        await update.effective_message.reply_text("Use assim: /registrar_leankeep 12")
+        return
+    await lk_oferecer(context.bot, context.args[0].lstrip("#"), chat=update.effective_chat.id)
 
 
 def teclado_pergunta(chave_p: str) -> InlineKeyboardMarkup:
@@ -4149,6 +4319,8 @@ def montar_app(token: str) -> Application:
     app.add_handler(CommandHandler("testar_leankeep", cmd_testar_leankeep))
     app.add_handler(CommandHandler("tagme_campos", cmd_tagme_campos))
     app.add_handler(CommandHandler("cardapio", cmd_cardapio))
+    app.add_handler(CommandHandler("registrar_leankeep", cmd_registrar_leankeep))
+    app.add_handler(CallbackQueryHandler(lk_botao, pattern=r"^lk\|"))
     app.add_handler(CommandHandler("cardapio_item", cmd_cardapio_item))
     app.add_handler(CallbackQueryHandler(botao_cardapio, pattern=r"^cd\|"))
     app.add_handler(CallbackQueryHandler(botao_reativar, pattern=r"^ocr\|"))
