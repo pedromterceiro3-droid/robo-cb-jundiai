@@ -331,6 +331,17 @@ mencoes = true
 meu_usuario = ""
 
 # ------------------------------------------------------------
+# AGRADECER A EQUIPE NO TÓPICO LEANKEEP DIÁRIO
+#   Foto ou "baixei/feito" no tópico: o robô reage (vibra) e responde com um obrigado,
+#   dizendo a tarefa quando dá para saber (cobrança em andamento ou citada na legenda).
+# ------------------------------------------------------------
+[leankeep_agradecer]
+ativo = true
+reacao = "👏"                  # reação na foto/mensagem (vale: 👍 ❤ 🔥 🎉 🙏 👏 🏆 💯 …)
+mensagem = true                # além da reação, responde com um obrigado
+intervalo_min = 15             # não repete o obrigado para a mesma pessoa/tarefa dentro desse tempo
+
+# ------------------------------------------------------------
 # BAIXA DECLARADA PELA EQUIPE (o site do Leankeep demora a atualizar)
 #   Quando alguém toca "✅ Baixa realizada", escreve "baixei" ou posta FOTO no tópico Leankeep
 #   durante uma cobrança, o robô para de cobrar aquela tarefa no grupo naquele dia.

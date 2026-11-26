@@ -457,6 +457,8 @@ async def cobrar_leankeep(context, cob, rodada):
         return
 
     if not ativs:
+        if rodada == 1 and bx_ja_respondido(cob, "r") and not TESTE.get():
+            return  # alguém já confirmou pelo botão e o robô já agradeceu: não repete no grupo
         if rodada == 1:  # no horário do prazo, confirma que está tudo em dia
             await enviar_grupo(bot,
                          f"✅ <b>{esc(cob['nome'])}</b>: tudo baixado no Leankeep. Valeu, equipe!")
@@ -2601,6 +2603,56 @@ async def reagir(bot, msg, emoji="👍"):
         log.info("Não consegui reagir à mensagem: %s", e)
 
 
+
+# ---- agradecer a equipe no tópico Leankeep diário (reação + mensagem) ----
+_OBRIGADO_LK = ["Obrigado, {n}!", "Valeu, {n}!", "Show, {n}, obrigado!", "Obrigado pelo capricho, {n}!",
+                "Muito bom, {n}, valeu!", "Boa, {n}! Obrigado!"]
+
+
+def lk_agr_cfg() -> dict:
+    return CFG.get("leankeep_agradecer", {}) or {}
+
+
+async def agradecer_lk(bot, msg, cobs=None, extra: str = ""):
+    """Reage à foto/mensagem e responde com um obrigado (sem repetir para a mesma pessoa em poucos minutos)."""
+    import random
+    import time as _t
+    c = lk_agr_cfg()
+    if not c.get("ativo", True):
+        await reagir(bot, msg)
+        return
+    await reagir(bot, msg, c.get("reacao", "👏"))
+    if not c.get("mensagem", True):
+        return
+    uid = msg.from_user.id if msg.from_user else 0
+    nomes = ", ".join(x["nome"] for x in (cobs or []))
+    chave = (msg.chat.id, uid, nomes)
+    if _t.time() - ULTIMO_OBRIGADO.get(chave, 0) < 60 * int(c.get("intervalo_min", 15)):
+        return  # já agradeceu essa pessoa por isso há pouco (ex.: várias fotos seguidas)
+    ULTIMO_OBRIGADO[chave] = _t.time()
+    n = esc(((msg.from_user.first_name if msg.from_user else "") or "equipe").split(" ")[0])
+    L = [f"{random.choice(_OBRIGADO_LK).format(n=n)} 🙌"]
+    if nomes:
+        L.append(f"<b>{esc(nomes)}</b> anotado ✅")
+    if extra:
+        L.append(extra)
+    await enviar(bot, msg.chat.id, "\n".join(L), message_thread_id=msg.message_thread_id if msg.is_topic_message else None,
+                 reply_to_message_id=msg.message_id)
+
+
+ULTIMO_OBRIGADO: dict = {}
+ALBUNS_LK: dict = {}
+
+
+def _album_repetido(msg) -> bool:
+    g = msg.media_group_id
+    if not g:
+        return False
+    if g in ALBUNS_LK:
+        return True
+    ALBUNS_LK[g] = True
+    return False
+
 async def verificar_declaradas(context):
     """Confere em silêncio as baixas declaradas. Se depois do tempo-limite o Leankeep
     ainda mostrar pendência, avisa só o gestor, no privado (nunca cobra no grupo)."""
@@ -2702,12 +2754,13 @@ async def conferir_baixa(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if ativs:
             faltando.append((cob, ativs))
     if not faltando:
+        await reagir(context.bot, msg, lk_agr_cfg().get("reacao", "👏"))
         await msg.reply_text(texto_tudo_baixado(cobs, quem))
         return
     if dcfg().get("ativo", True):  # confia na equipe agora e confere depois, em silêncio
         for cob, _ in faltando:
             declarar(cob, msg.from_user.full_name if msg.from_user else quem, "escreveu no grupo")
-        await reagir(context.bot, msg)
+        await agradecer_lk(context.bot, msg, [c for c, _ in faltando])
         return
     await enviar(context.bot, msg.chat.id, texto_faltam_baixas(quem, faltando),
                  message_thread_id=msg.message_thread_id if msg.is_topic_message else None,
@@ -2860,11 +2913,13 @@ async def mensagem_grupo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 cobs = ([CFG["cobrancas"][MSG_COBRANCA[alvo.message_id]]]
                         if alvo and alvo.message_id in MSG_COBRANCA
                         else cobrancas_citadas(msg.caption or "") or cobranca_da_foto())
-                cobs = [c for c in cobs if not declarada(c)]
-                if cobs:
-                    for c in cobs:
-                        declarar(c, msg.from_user.full_name if msg.from_user else "?", "postou foto")
-                    await reagir(context.bot, msg)
+                novas = [c for c in cobs if not declarada(c)]
+                for c in novas:
+                    declarar(c, msg.from_user.full_name if msg.from_user else "?", "postou foto")
+                # toda foto é uma contribuição: reage e agradece (álbum: só na 1ª foto)
+                if not _album_repetido(msg):
+                    await agradecer_lk(context.bot, msg, cobs)
+                if novas or not eh_aviso_de_baixa(msg.caption or ""):
                     return
             await conferir_baixa(update, context)
 
@@ -2898,6 +2953,41 @@ def _mencao_usuario(u) -> str:
     return f'<a href="tg://user?id={u.id}">{esc(u.first_name or u.full_name)}</a>'
 
 
+ARQ_BX = DADOS / "botoes_baixa.json"
+
+
+def _bx_chave(cob, acao: str) -> str:
+    return f"{data_ref(cob).isoformat()}|{CFG['cobrancas'].index(cob)}|{acao}"
+
+
+def bx_ja_respondido(cob, acao: str) -> dict | None:
+    """Já houve resposta a este botão hoje? (trava contra vários cliques enquanto o robô processa)"""
+    d = ler(ARQ_BX, {}).get(_bx_chave(cob, acao))
+    if not d:
+        return None
+    ate = d.get("ate")
+    if ate and datetime.now(FUSO) > datetime.fromisoformat(ate):
+        return None  # trava temporária venceu (ex.: ainda faltava baixa – pode tentar de novo)
+    return d
+
+
+def bx_marcar(cob, acao: str, quem: str, minutos: int | None = None, **extra):
+    dados = ler(ARQ_BX, {})
+    v = {"quem": quem, "em": datetime.now(FUSO).isoformat(timespec="minutes")}
+    if minutos:
+        v["ate"] = (datetime.now(FUSO) + timedelta(minutes=minutos)).isoformat(timespec="minutes")
+    v.update(extra)
+    dados[_bx_chave(cob, acao)] = v
+    limite = (hoje() - timedelta(days=3)).isoformat()
+    gravar(ARQ_BX, {k: x for k, x in dados.items() if k.split("|")[0] >= limite})
+
+
+def bx_soltar(cob, acao: str):
+    dados = ler(ARQ_BX, {})
+    if dados.pop(_bx_chave(cob, acao), None) is not None:
+        gravar(ARQ_BX, dados)
+
+
 async def botao_baixa(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     _, acao, idx = q.data.split("|", 2)
@@ -2912,15 +3002,24 @@ async def botao_baixa(update: Update, context: ContextTypes.DEFAULT_TYPE):
     top = q.message.message_thread_id if q.message.is_topic_message else None
     g = CFG.get("gestor_chat_id")
 
+    if acao in ("r", "p"):  # um clique já vale: os outros (de quem tocou de novo enquanto o robô processava) só ganham um aviso
+        ja = bx_ja_respondido(cob, acao)
+        if ja:
+            await q.answer(f"Já registrado por {ja['quem'].split(' ')[0]} às {ja['em'][11:16]} ✅", show_alert=False)
+            return
+        bx_marcar(cob, acao, quem, minutos=10)  # trava já, antes da consulta demorada
     if acao == "r":
         await q.answer("Conferindo no Leankeep…")
         try:
             pend = sem_duplicadas(await buscar_pendentes(cob.get("palavras"), data_ref(cob), cob.get("excluir")))
         except Exception as e:
+            bx_soltar(cob, acao)
             await enviar(context.bot, chat, f"Não consegui conferir no Leankeep agora: {esc(e)}",
                          message_thread_id=top, reply_to_message_id=q.message.message_id)
             return
         registrar_resposta(cob, quem, "realizada" if not pend else "realizada_mas_pendente")
+        if not pend or dcfg().get("ativo", True):
+            bx_marcar(cob, acao, quem, tudo=not pend)  # vale o dia todo: não responde de novo
         if pend and dcfg().get("ativo", True):
             declarar(cob, quem, "botão Baixa realizada")
             await enviar(context.bot, chat,
