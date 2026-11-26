@@ -141,7 +141,8 @@ class Legado:
 
     # ---------- formulário novo ----------
     def abrir(self):
-        agora = datetime.now()
+        from zoneinfo import ZoneInfo
+        agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
         r = self.http.get(URL_NOVO + f"&currentDate={agora:%Y-%m-%d}&currentTime={agora:%H-%M}")
         final = str(r.url)
         if r.status_code >= 400 or re.search(r"SignIn|/login|Reauth", final, re.I):
@@ -304,11 +305,16 @@ class Legado:
         if not cfgm:
             raise RuntimeError("não achei o componente de foto no formulário")
         config = json.loads('"' + cfgm.group(1) + '"')  # desfaz os escapes do JSON (\/, \u002b…)
-        uid = f"{uuid.uuid4()}{'.png' if 'png' in tipo else '.jpg'}"
-        meta = {"TotalChunks": 1, "ChunkIndex": 0, "TotalFileSize": len(conteudo), "UploadID": uid}
+        tipom = re.search(r'"_serializedConfigurationType"\s*:\s*"([^"]+)"', self.html)
+        config_tipo = json.loads('"' + tipom.group(1) + '"') if tipom else ""
+        handler = re.search(r'"_handlerUrl"\s*:\s*"([^"]+)"', self.html)
+        url_up = json.loads('"' + handler.group(1) + '"') if handler else "/Telerik.Web.UI.WebResource.axd?type=rau"
+        # igual ao site (RadAsyncUpload): rauPostData = configuração & tipo; "metadata" vai à parte
+        meta = {"TotalChunks": 1, "ChunkIndex": 0, "TotalFileSize": len(conteudo),
+                "UploadID": f"{int(datetime.now().timestamp() * 1000)}{nome_arquivo}", "IsSingleChunkUpload": True}
         meta_txt = json.dumps(meta, separators=(",", ":"))
-        r = self.http.post("/Telerik.Web.UI.WebResource.axd?type=rau",
-                           data={"rauPostData": f"{config}&{meta_txt}", "fileName": nome_arquivo, "contentType": tipo,
+        r = self.http.post(url_up if url_up.startswith("http") else BASE + url_up,
+                           data={"rauPostData": f"{config}&{config_tipo}", "fileName": nome_arquivo, "contentType": tipo,
                                  "lastModifiedDate": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z"),
                                  "metadata": meta_txt},
                            files={"file": (nome_arquivo, conteudo, tipo)},
