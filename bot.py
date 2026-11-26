@@ -3782,6 +3782,21 @@ async def cmd_reservas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await resumo_tagme(context, chat_destino=chat, thread=top, modo=modo)
 
 
+
+async def cmd_configurar_cardapio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mandado DENTRO do tópico "Cardápio Tagme": a conferência diária do cardápio passa a sair ali."""
+    msg = update.message
+    if update.effective_chat.type == "private":
+        await msg.reply_text("Envie este comando DENTRO do tópico \"Cardápio Tagme\" do grupo Bot Diretoria.")
+        return
+    if CFG.get("gestor_chat_id") and update.effective_user.id != int(CFG["gestor_chat_id"]):
+        await msg.reply_text("Só o gestor pode configurar.")
+        return
+    topico = msg.message_thread_id if msg.is_topic_message else 0
+    salvar_ajuste(card_grupo_chat_id=update.effective_chat.id, card_topico_id=topico)
+    await msg.reply_text("✅ Pronto! A conferência diária do cardápio da Tagme (o que saiu, entrou e mudou de preço) "
+                         "vai chegar aqui, todo dia às " + str(card_cfg().get("horario", "09:00")) + ".")
+
 async def cmd_configurar_tagme(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if update.effective_chat.type == "private":
@@ -3822,7 +3837,7 @@ def card_cfg() -> dict:
     return CFG.get("cardapio", {}) or {}
 
 
-async def cartao_cardapio(bot, chat, item: dict, tipo: str):
+async def cartao_cardapio(bot, chat, item: dict, tipo: str, topico=None):
     """Um item do cardápio: foto do produto + código, descrição e preço, com botões."""
     import cardapio as CD
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 Abrir no GIA", url=CD.LINK_GIA),
@@ -3831,11 +3846,11 @@ async def cartao_cardapio(bot, chat, item: dict, tipo: str):
     if item.get("foto"):
         try:
             await bot.send_photo(chat, item["foto"], caption=limpar_texto(texto)[:1024], parse_mode=ParseMode.HTML,
-                                 reply_markup=kb)
+                                 reply_markup=kb, message_thread_id=topico)
             return
         except Exception as e:
             log.info("Cardápio: não consegui mandar a foto de %s: %s", item.get("codigo"), e)
-    await enviar(bot, chat, texto, reply_markup=kb)
+    await enviar(bot, chat, texto, reply_markup=kb, message_thread_id=topico)
 
 
 def texto_mudancas_cardapio(dif: dict, total_pratos: int, desde: str) -> str:
@@ -3866,18 +3881,35 @@ def texto_mudancas_cardapio(dif: dict, total_pratos: int, desde: str) -> str:
     return "\n".join(L)
 
 
+
+def _enviar(*a, **kw):
+    return enviar(*a, **kw)
+
 async def cardapio_diario(context: ContextTypes.DEFAULT_TYPE, chat=None):
     """Compara o cardápio da Tagme de hoje com o da última conferência e explica o que mudou (privado)."""
     import cardapio as CD
-    destino = chat or CFG.get("gestor_chat_id")
+    topico = None
+    if chat:
+        destino = chat
+    elif CFG.get("card_grupo_chat_id"):  # tópico "Cardápio Tagme" (configurado com /configurar_cardapio)
+        destino, topico = CFG["card_grupo_chat_id"], CFG.get("card_topico_id") or None
+    else:
+        destino = CFG.get("gestor_chat_id")
     if not destino:
         return
+
+    async def enviar(bot, chat_id, texto, **kw):  # tudo desta conferência vai para o mesmo tópico
+        if topico and chat_id == destino:
+            kw.setdefault("message_thread_id", topico)
+        return await _enviar(bot, chat_id, texto, **kw)
     try:
         agora = await asyncio.wait_for(asyncio.to_thread(CD.buscar, int(card_cfg().get("store_id", 1217))), 120)
     except Exception as e:
         log.warning("Cardápio: erro ao ler a Tagme: %s", e)
-        await enviar(context.bot, destino, f"⚠️ Não consegui abrir o cardápio da Tagme agora. Tento de novo depois.\n"
-                                           f"<i>Detalhe: {esc(str(e)[:150])}</i>")
+        # erro técnico: só no privado do gestor (não polui o grupo)
+        await _enviar(context.bot, chat or CFG.get("gestor_chat_id"),
+                      f"⚠️ Não consegui abrir o cardápio da Tagme agora. Tento de novo depois.\n"
+                      f"<i>Detalhe: {esc(str(e)[:150])}</i>")
         return
     pratos = len({i["produto_id"] for i in agora.values()})
     ant = ler(ARQ_CARDAPIO, {})
@@ -3925,7 +3957,8 @@ async def botao_cardapio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for item in dif.get(tipo, []):
             if n >= limite:
                 break
-            await cartao_cardapio(context.bot, q.message.chat.id, item, tipo)
+            await cartao_cardapio(context.bot, q.message.chat.id, item, tipo,
+                                  q.message.message_thread_id if q.message.is_topic_message else None)
             n += 1
 
 
@@ -4751,6 +4784,7 @@ def montar_app(token: str) -> Application:
     app.add_handler(CommandHandler("testar_leankeep", cmd_testar_leankeep))
     app.add_handler(CommandHandler("tagme_campos", cmd_tagme_campos))
     app.add_handler(CommandHandler("cardapio", cmd_cardapio))
+    app.add_handler(CommandHandler("configurar_cardapio", cmd_configurar_cardapio))
     app.add_handler(CommandHandler("registrar_leankeep", cmd_registrar_leankeep))
     app.add_handler(CallbackQueryHandler(lk_botao, pattern=r"^lk\|"))
     app.add_handler(CommandHandler("auditoria", cmd_auditoria))
