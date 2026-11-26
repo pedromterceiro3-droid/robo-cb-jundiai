@@ -329,8 +329,15 @@ class Legado:
         estado = {"isEnabled": "true", "uploadedFiles": [{"fileInfo": j["fileInfo"], "metaData": j["metaData"]}]}
         self.campos[self.c("foto_state")] = json.dumps(estado, separators=(",", ":"))
 
-    def preencher(self, descricao: str, prioridade: str, quando: datetime | None = None):
+    def preencher(self, descricao: str, prioridade: str, quando: datetime | None = None,
+                  emitente: tuple[str, str] = ("84106", "Pedro Melo")):
         q = quando or datetime.now()
+        # Solicitante (emitente): obrigatório. Na página aberta direto ele pode vir vazio.
+        e = self.c("emitente")
+        atual = self.campos.get(e + "$Value", "")
+        if not re.search(r'"Value":"\d+"', atual):
+            self.campos[e + "$Value"] = valor_qs(*emitente)
+            self.campos[e + "$Text"] = emitente[1]
         self.campos[self.c("descricao")] = descricao[:3900]
         self.campos[self.c("prioridade")] = PRIORIDADES.get(prioridade, prioridade)
         self.campos[self.c("data")] = q.strftime("%d/%m/%Y")
@@ -381,7 +388,8 @@ UNIDADE = ("57896", "CB JUNDIAÍ")
 
 def registrar(token: str, refresh: str | None, grupo: tuple[str, str], area: tuple[str, str], prioridade: str,
               descricao: str, foto: bytes | None = None, quando: datetime | None = None,
-              empresa_id: str = "3802", unidade: tuple[str, str] = UNIDADE) -> str:
+              empresa_id: str = "3802", unidade: tuple[str, str] = UNIDADE,
+              emitente: tuple[str, str] = ("84106", "Pedro Melo")) -> str:
     """Cria a ocorrência no Leankeep (como o formulário do site). Devolve o número."""
     lg = Legado(token, refresh, empresa_id).abrir()
     lg.escolher_unidade(*unidade)
@@ -389,7 +397,7 @@ def registrar(token: str, refresh: str | None, grupo: tuple[str, str], area: tup
         raise RuntimeError(f"o Leankeep não aceitou o grupo {grupo[1]}")
     if not lg.escolher_area(*area):
         raise RuntimeError(f"o Leankeep não aceitou a área {area[1]}")
-    lg.preencher(descricao, prioridade, quando)
+    lg.preencher(descricao, prioridade, quando, emitente)
     aviso_foto = ""
     if foto:
         try:
