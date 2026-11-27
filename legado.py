@@ -712,8 +712,48 @@ def url_correcao_pela_ocorrencia(lg: "Legado", query: str) -> str | None:
         log.info("Leankeep antigo: Incluir Correção falhou: %s", e)
         return None
 
+
+def _garantir_pessoa(lg: "Legado", repeater: str, campo: str, botao: str, pessoa: tuple[str, str]) -> bool:
+    """Solicitante/Executor da correção: se a linha sumiu (o formulário recarrega ao trocar o status),
+    clica no ⊕ e preenche com a pessoa."""
+    pid, pnome = pessoa
+    padrao = r'name="([^"]*' + repeater + r'\$ctl\d+\$' + campo + r')\$Value"'
+
+    def linhas():
+        return list(dict.fromkeys(re.findall(padrao, (lg.ultimo or "") + lg.html)))
+    achadas = linhas()
+    if not achadas:
+        nome_botao = f"{lg.pre}$PageContent${botao}"
+        for modo in ("async", "cheio"):
+            try:
+                extra = {nome_botao + ".x": "6", nome_botao + ".y": "6"}
+                if modo == "async":
+                    lg._postback_async("", extra, quem=nome_botao)
+                else:
+                    lg._postback("", extra)
+            except Exception as e:
+                log.info("Leankeep antigo: ⊕ %s via %s falhou: %s", campo, modo, e)
+                continue
+            achadas = linhas()
+            if achadas:
+                break
+    if not achadas:
+        return False
+    nome = achadas[0]
+    extra = {nome + "$Value": valor_qs(pid, pnome), nome + "$Text": pnome}
+    lg.campos.update(extra)
+    for alvo in (nome.replace("$", "_"), nome):
+        try:
+            lg._postback_async(alvo, extra)
+            break
+        except Exception:
+            continue
+    lg.campos.update(extra)
+    return True
+
 def seguimento(token: str, refresh: str | None, numero: str, status: str, descricao: str = "",
-               foto: bytes | None = None, quando: datetime | None = None, empresa_id: str = "3802") -> str:
+               foto: bytes | None = None, quando: datetime | None = None, empresa_id: str = "3802",
+               pessoa: tuple[str, str] = ("84106", "Pedro Melo")) -> str:
     """Inclui uma correção (seguimento) na ocorrência. status = código de STATUS_CORRECAO.
     Devolve "ok" ou "ok|aviso"."""
     if status not in STATUS_CORRECAO:
@@ -736,6 +776,12 @@ def seguimento(token: str, refresh: str | None, numero: str, status: str, descri
             log.info("Leankeep antigo: postback do status falhou (%s); tentando AJAX", e)
             lg._postback_async(lg.c("status"))
         lg.campos[lg.c("status")] = status
+    # Solicitante e Executor são obrigatórios: trocar o status recarrega o formulário e pode apagá-los
+    sem = [n for n, rep, campo, bt in (("Solicitante", "AcoesCorretivasEmitentesTableControlRepeater", "Emitente", "EmitenteAddButton"),
+                                       ("Executor", "AcoesCorretivasExecutoresTableControlRepeater", "Executor", "ExecutorAddButton"))
+           if not _garantir_pessoa(lg, rep, campo, bt, pessoa)]
+    if sem:
+        log.warning("Leankeep antigo: não consegui preencher %s na correção", ", ".join(sem))
     q = quando or datetime.now()
     lg.campos[lg.c("inicio")] = q.strftime("%d/%m/%Y")
     lg.campos[lg.c("hora")] = q.strftime("%H:%M")
