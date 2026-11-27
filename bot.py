@@ -3706,6 +3706,31 @@ def _status(o: dict) -> str:
     return str(v).lower()
 
 
+
+def _status_reserva(o: dict) -> str:
+    """Situação da reserva juntando todos os campos que podem dizer isso (status, state, situation,
+    statusName…) e as marcas de cancelamento (canceledAt, isCanceled, cancelled: true…)."""
+    import re as _re
+    partes = []
+
+    def olhar(d, prof=0):
+        for k, v in d.items():
+            kl = str(k).lower()
+            if isinstance(v, dict) and prof < 1 and _re.search(r"status|state|situa", kl):
+                for kk in ("name", "value", "label", "description", "descricao", "code", "slug", "status"):
+                    if isinstance(v.get(kk), (str, int)) and str(v.get(kk)).strip():
+                        partes.append(str(v[kk]))
+                olhar(v, prof + 1)
+                continue
+            if _re.search(r"status|state|situa|etapa|stage", kl) and isinstance(v, (str, int)) and str(v).strip():
+                partes.append(str(v))
+            if "cancel" in kl and (v is True or (isinstance(v, str) and _re.match(r"\d{4}-\d{2}-\d{2}", v))):
+                partes.append("cancelada")
+            if _re.search(r"deleted|removed|excluid", kl) and (v is True or (isinstance(v, str) and _re.match(r"\d{4}-\d{2}-\d{2}", v))):
+                partes.append("cancelada")
+    olhar(o)
+    return " ".join(partes).lower()
+
 def _id(o: dict) -> str:
     return str(_c(o, "id", "_id", "entryId", "uuid", "reservationId", padrao=json.dumps(o, sort_keys=True)[:80]))
 
@@ -3763,7 +3788,7 @@ def _periodo(o: dict) -> str:
 
 
 def _cat_reserva(st: str) -> str:
-    if "cancel" in st:
+    if any(x in st for x in ("cancel", "recus", "reject", "declin", "denied", "expir")):
         return "canceladas"
     if "no_show" in st or "noshow" in st or "no-show" in st or "absent" in st:
         return "no-show"
@@ -4003,9 +4028,11 @@ def _etiqueta(st: str, realizado: bool) -> str:
 
 def texto_reservas(reservas, dia: date, titulo: str, realizado: bool, com_titulo: bool = True) -> list[str]:
     """Bloco de um dia: total, e por período (Almoço / Jantar) cada reserva com hora, nome e pessoas."""
-    ativas = [o for o in reservas if _cat_reserva(_status(o)) != "canceladas"]
-    canceladas = [o for o in reservas if _cat_reserva(_status(o)) == "canceladas"]
+    ativas = [o for o in reservas if _cat_reserva(_status_reserva(o)) != "canceladas"]
+    canceladas = [o for o in reservas if _cat_reserva(_status_reserva(o)) == "canceladas"]
     L = [f"<b>Reservas {titulo_dia(titulo)} ({dia.strftime('%d/%m')})</b>"] if com_titulo else []
+    if not tg_cfg().get("mostrar_canceladas", False):
+        canceladas = []  # canceladas ficam totalmente de fora da mensagem
     if not ativas:
         L += ["Nenhuma reserva."]
         if canceladas:
@@ -4027,7 +4054,7 @@ def texto_reservas(reservas, dia: date, titulo: str, realizado: bool, com_titulo
         for o in lista[:60]:
             h = _hora_local(o)
             hora = f"{h[0]:02d}:{h[1]:02d}" if h else "--:--"
-            et = _etiqueta(_status(o), realizado)
+            et = _etiqueta(_status_reserva(o), realizado)
             L.append(f"{hora} – {esc(_nome_completo(o))} – {plural(_pessoas(o), 'pessoa')}"
                      + (f" <i>({et})</i>" if et else ""))
         if len(lista) > 60:
