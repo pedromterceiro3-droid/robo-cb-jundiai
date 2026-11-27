@@ -29,6 +29,7 @@ class Atividade:
     status: str
     executores: list[str] = field(default_factory=list)
     realizada: str | None = None   # data/hora da baixa (quando o Leankeep informa)
+    tarefa_id: str = ""            # id usado na baixa (tarefaId)
 
 
 def _achar_token(obj):
@@ -298,6 +299,7 @@ class Leankeep:
                                           for k, v in a.items()})
                             resultado.append(Atividade(
                                 numero=str(a.get("numero", "")),
+                                tarefa_id=str(a.get("tarefaId") or a.get("id") or a.get("numero") or ""),
                                 descricao=str(a.get("descricao", "")).strip(),
                                 unidade=str(grupo.get("unidadeNome", "")),
                                 plano=str(grupo.get("planoNome") or "-"),
@@ -312,3 +314,131 @@ class Leankeep:
             pendentes_ids = proximos
         log.info("Leankeep: %s atividades encontradas (situação %s)", len(resultado), situacao)
         return resultado
+
+
+    # ---------- baixa de atividades (igual ao "Baixar atividades" da Agenda do site) ----------
+    def _req(self, metodo: str, caminho: str, corpo=None, unidade: str | None = None):
+        if not self.token:
+            self.login()
+        for tentativa in range(2):
+            h = {"Authorization": f"Bearer {self.token}", "EmpresaId": self.empresa_id,
+                 "Content-Type": "application/json"}
+            if unidade:
+                h["UnidadeId"] = str(unidade)
+            r = self.http.request(metodo, API_URL + caminho, json=corpo, headers=h)
+            log.info("Leankeep: %s %s -> %s", metodo, caminho, r.status_code)
+            if r.status_code == 401 and tentativa == 0:
+                self.renovar()
+                continue
+            if r.status_code >= 400:
+                raise RuntimeError(f"Leankeep respondeu {r.status_code} em {caminho}: {r.text[:300]}")
+            return r.json() if r.content else {}
+
+    def baixa_info(self, tarefas: list) -> dict:
+        """Atividades que ainda podem ser baixadas (as já baixadas não voltam), tempo previsto, foto obrigatória."""
+        return self._req("POST", "/v2/atividades/baixa/info", [int(t) for t in tarefas])
+
+    def usuarios_unidade(self, unidade_id) -> list[dict]:
+        r = self._req("GET", f"/v1/usuarios?UnidadeId={int(unidade_id)}")
+        return r if isinstance(r, list) else (r.get("data") or r.get("itens") or [])
+
+    def medicoes(self, tarefa) -> list[dict]:
+        """Campos de medição da atividade (atividadeMedicaoId, tarefaMedicaoId, unidadeMedicaoNome, valorPadrao...)."""
+        r = self._req("GET", f"/v1/atividades/{int(tarefa)}/medicoes")
+        return r if isinstance(r, list) else (r.get("data") or r.get("medicoes") or [])
+
+    def salvar_medicao(self, tarefa, valor: float):
+        """Grava o valor medido no 1º campo de medição da atividade (como o site faz antes de baixar)."""
+        campos = self.medicoes(tarefa)
+        if not campos:
+            return False
+        c = campos[0]
+        r = self._req("POST", "/v1/atividades/medicoes", {"tarefaId": int(tarefa), "medicoes": [
+            {"tarefaMedicaoId": c.get("tarefaMedicaoId"), "atividadeMedicaoId": c["atividadeMedicaoId"],
+             "valorMedicao": float(valor)}]})
+        if isinstance(r, dict) and r.get("success") is False:
+            raise RuntimeError(r.get("message") or "o Leankeep recusou a medição")
+        return True
+
+    def salvar_fotos_tarefa(self, tarefa, observacao: str, fotos: list[bytes]) -> int:
+        """Fotos (e observação) da própria atividade, como em "Fotos e Medições" do app. Devolve quantas subiram."""
+        import uuid
+        metas = []
+        for _ in fotos:
+            gid = str(uuid.uuid4())
+            metas.append({"gid": gid, "fotoPath": f"web/{gid}.jpg", "descricao": ""})
+        r = self._req("POST", "/v1/atividades/fotosobservacao",
+                      {"tarefaId": int(tarefa), "observacao": observacao or None, "fotos": metas})
+        if isinstance(r, dict) and r.get("success") is False:
+            raise RuntimeError(r.get("message") or "o Leankeep recusou as fotos da atividade")
+        criados = (r.get("fotoPathCreated") or (r.get("data") or {}).get("fotoPathCreated") or {}) if isinstance(r, dict) else {}
+        ok = 0
+        for meta, conteudo in zip(metas, fotos):
+            destino = criados.get(meta["gid"])
+            if destino:
+                try:
+                    self.enviar_foto_storage(destino, conteudo)
+                    ok += 1
+                except Exception as e:
+                    log.warning("Leankeep: foto da atividade %s não subiu: %s", tarefa, e)
+        return ok
+
+    def baixar(self, tarefas: list, unidade_id, quando, executores: list[tuple[int, int]],
+               observacao: str = "", fotos: list[bytes] | None = None,
+               medicoes: dict | None = None, obs_tarefa: dict | None = None,
+               fotos_tarefa: dict | None = None) -> dict:
+        """Baixa as atividades como Realizadas. executores = [(usuarioId, minutos)]. Devolve a resposta."""
+        import uuid
+        info = self.baixa_info(tarefas)
+        ainda = {int(a["tarefaId"]) for a in info.get("atividades", [])}
+        ids = [int(t) for t in tarefas if int(t) in ainda]
+        if not ids:
+            return {"ja_baixadas": True}
+        tempo = int(info.get("tempoTotalPrevisto") or len(ids))
+        por_id = {int(a["tarefaId"]): a for a in info.get("atividades", [])}
+        # medições primeiro (se alguma falhar, nada é baixado — igual ao site)
+        for t, v in (medicoes or {}).items():
+            if int(t) in ainda:
+                self.salvar_medicao(t, v)
+        fotos_ok = fotos_ped = 0
+        for t, lst in (fotos_tarefa or {}).items():
+            if int(t) in ainda and lst:
+                fotos_ped += len(lst)
+                fotos_ok += self.salvar_fotos_tarefa(t, (obs_tarefa or {}).get(str(t), ""), lst)
+        fotos_meta = []
+        for _ in fotos or []:
+            gid = str(uuid.uuid4())
+            fotos_meta.append({"gid": gid, "fotoPath": f"web/{gid}.jpg", "descricao": ""})
+        corpo = {"siteId": int(unidade_id), "dataRealizada": quando.strftime("%Y-%m-%dT%H:%M:00"),
+                 "tempoTotal": tempo, "observacao": observacao or None, "temAssinatura": False,
+                 "gerarOcorrenciasPorAtividadeNaoConforme": False, "gerarOcorrenciasPorMedicoesForaPadrao": False,
+                 "parametrosBaixaAtividades": [
+                     {"tarefaId": t, "realizada": True,
+                      "conformidade": 2 if por_id.get(t, {}).get("tipoValidacao") == 1 else 1,
+                      **({"observacao": (obs_tarefa or {})[str(t)]} if (obs_tarefa or {}).get(str(t)) else {})}
+                     for t in ids],
+                 "executores": [{"executor": int(e), "tempo": int(m or tempo)} for e, m in executores],
+                 "fotos": fotos_meta, "plataforma": 1}
+        r = self._req("PUT", "/v2/atividades/baixa", corpo)
+        if isinstance(r, dict) and r.get("success") is False:
+            raise RuntimeError(r.get("message") or "o Leankeep recusou a baixa")
+        caminhos = (r.get("fotosPath") or (r.get("data") or {}).get("fotosPath") or {}) if isinstance(r, dict) else {}
+        enviadas = 0
+        for meta, conteudo in zip(fotos_meta, fotos or []):
+            destino = caminhos.get(meta["fotoPath"])
+            if destino:
+                try:
+                    self.enviar_foto_storage(destino, conteudo)
+                    enviadas += 1
+                except Exception as e:
+                    log.warning("Leankeep: foto da baixa não subiu: %s", e)
+        return {"baixadas": ids, "fotos": enviadas + fotos_ok, "fotos_pedidas": len(fotos_meta) + fotos_ped,
+                "resposta": r}
+
+    def enviar_foto_storage(self, caminho: str, conteudo: bytes):
+        r = self.http.post("https://media.lkp.app.br/v1/storage/upload",
+                           headers={"Authorization": f"Bearer {self.token}"},
+                           files={"files": (caminho, conteudo, "image/jpeg")},
+                           data={"EnableCompression": "true", "MaxWidthOrHeight": "1920"})
+        if r.status_code >= 400:
+            raise RuntimeError(f"upload respondeu {r.status_code}: {r.text[:150]}")

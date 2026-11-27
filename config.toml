@@ -374,6 +374,54 @@ intervalo_min = 15             # não repete o obrigado para a mesma pessoa/tare
 #   Depois ele confere sozinho no Leankeep. Se mesmo assim continuar pendente,
 #   avisa SÓ você, no privado.
 # ------------------------------------------------------------
+# ------------------------------------------------------------
+# BAIXAR ATIVIDADES DA AGENDA PELO TELEGRAM
+#   Botão 📲 Baixar no Leankeep nas cobranças, ou /baixar (lista tudo que está pendente hoje).
+#   Escolhe o plano → (foto opcional, respondendo a mensagem) → ✅ Baixar agora.
+#   Executor: quem tocou (se fez /cadastrar com o nome do Leankeep); senão, o usuário padrão.
+# ------------------------------------------------------------
+[baixa_telegram]
+ativo = true
+unidade_id = 57896
+executor_padrao = 84106      # Pedro Melo
+# Planos que só baixam com foto (basta o nome do plano conter as palavras do item)
+foto_obrigatoria = [
+  "Leitura de água",
+  "Leitura de energia",
+  "Leitura de gás",
+  "Leitura da pressão de gás",
+  "Desligamento da exaustão",
+  "Insuflamento",
+  "Fechamento da loja",
+  "Fechamento registro gás",
+]
+
+# Planos em que a pessoa precisa DIGITAR a leitura (formato da tabela: 1.770.510,25)
+# A baixa só sai com todas as leituras; o robô recusa número menor que a última leitura.
+[[baixa_telegram.leituras]]
+plano = "Leitura de energia"
+medidores = [{ nome = "Energia (kWh)", contem = [] }]
+
+[[baixa_telegram.leituras]]
+plano = "Leitura de gás"
+sem = ["pressão"]               # "Leitura da pressão de gás" não pede número de medidor
+# cada atividade do plano é um medidor (pela descrição da atividade)
+medidores = [
+  { nome = "Gás cozinha (m³)", contem = ["cozinha"] },
+  { nome = "Gás ar cond. (m³)", contem = ["ar cond"] },
+]
+
+[[baixa_telegram.leituras]]
+plano = "Leitura de água"
+medidores = [{ nome = "Água (m³)", contem = [] }]
+
+# Últimas leituras conhecidas (tabela de 27/nov), só para o robô conferir a primeira leitura
+[baixa_telegram.leitura_inicial]
+"Energia (kWh)" = "1.770.510,25"
+"Gás cozinha (m³)" = "220.351,69"
+"Gás ar cond. (m³)" = "78.843,67"
+"Água (m³)" = "28.148,50"
+
 [baixa_declarada]
 ativo = true
 foto_conta = true              # foto postada no tópico durante a cobrança vale como "baixei"

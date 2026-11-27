@@ -2014,6 +2014,8 @@ async def sg_resposta_privada(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def sg_foto_privada(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await ag_resposta(update, context):
+        return
     await sg_resposta_privada(update, context)
 
 
@@ -3012,6 +3014,8 @@ async def mensagem_grupo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return  # mensagem do grupo do bar
     except Exception:
         log.exception("Erro nas rotinas do bar")
+    if msg.reply_to_message and (msg.photo or msg.text) and await ag_resposta(update, context):
+        return  # foto ou leitura respondendo a um "Baixar no Leankeep"
     if no_topico_ocorrencias(msg) or no_topico_saida(msg):
         await oc_mensagem(update, context)
     elif no_topico_leankeep(msg):
@@ -3032,6 +3036,413 @@ async def mensagem_grupo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await conferir_baixa(update, context)
 
 
+
+# =====================================================================
+#  BAIXAR ATIVIDADES DA AGENDA PELO TELEGRAM (igual ao "Baixar atividades" do site)
+#  📲 nas cobranças ou /baixar → escolhe o plano → (foto opcional, respondendo) → ✅ Baixar agora
+# =====================================================================
+ARQ_AG = DADOS / "baixas_telegram.json"
+
+
+def ag_cfg() -> dict:
+    return CFG.get("baixa_telegram", {}) or {}
+
+
+async def _ag_pendentes(cob=None) -> list:
+    """Pendentes de hoje (de uma cobrança ou da agenda toda), agrupadas por plano."""
+    if cob:
+        ativs = await buscar_pendentes(cob.get("palavras"), data_ref(cob), cob.get("excluir"))
+    else:
+        h = hoje()
+        ativs = await asyncio.wait_for(asyncio.to_thread(LK.pendentes, h, h, CFG.get("unidade")), 180)
+    planos = {}
+    for a in sem_duplicadas(ativs):
+        planos.setdefault(a.plano or "-", []).append(a)
+    return [{"plano": p, "ids": [a.tarefa_id or a.numero for a in lst], "desc": [legivel(a.descricao) for a in lst],
+             "prazo": (min((a.data for a in lst if a.data), default="") or "")[11:16]}
+            for p, lst in sorted(planos.items(), key=lambda x: min((a.data for a in x[1] if a.data), default=""))]
+
+
+async def ag_listar(bot, chat, top, cob=None, responder_a=None):
+    try:
+        grupos = await _ag_pendentes(cob)
+    except Exception as e:
+        await enviar(bot, chat, f"⚠️ Não consegui ver as atividades no Leankeep: {esc(str(e)[:200])}", message_thread_id=top)
+        return
+    if not grupos:
+        await enviar(bot, chat, "✅ Nada pendente no Leankeep" + (f" para <b>{esc(cob['nome'])}</b>" if cob else " hoje") + ".",
+                     message_thread_id=top, reply_to_message_id=responder_a)
+        return
+    d = ler(ARQ_AG, {})
+    chave = str(int(datetime.now(FUSO).timestamp()))[-6:]
+    d.setdefault("listas", {})[chave] = grupos
+    d["listas"] = dict(list(d["listas"].items())[-20:])
+    gravar(ARQ_AG, d)
+    bts = [[InlineKeyboardButton(f"{g['plano'].title()[:34]} ({len(g['ids'])})", callback_data=f"ag|p|{chave}|{i}")]
+           for i, g in enumerate(grupos[:20])]
+    titulo = f"<b>{esc(cob['nome'])}</b>" if cob else f"<b>Atividades pendentes hoje</b> ({hoje():%d/%m})"
+    await enviar(bot, chat, f"📲 {titulo}\nQual plano você vai baixar no Leankeep? 👇", message_thread_id=top,
+                 reply_markup=InlineKeyboardMarkup(bts), reply_to_message_id=responder_a)
+
+
+_AG_VAZIAS = {"da", "de", "do", "das", "dos", "e", "a", "o"}
+
+
+def ag_foto_obrigatoria(plano: str, descs=()) -> bool:
+    """O plano está na lista [baixa_telegram].foto_obrigatoria? (todas as palavras do item no nome do plano)"""
+    alvos = [normalizar(plano)] + [normalizar(x) for x in descs]
+    for item in ag_cfg().get("foto_obrigatoria", []):
+        pal = [w for w in normalizar(item).split() if w.lower() not in _AG_VAZIAS]
+        if pal and any(all(w in t for w in pal) for t in alvos):
+            return True
+    return False
+
+
+_RE_LEITURA = re.compile(r"^\d{1,3}(?:\.\d{3})*,\d{2}$")
+
+
+def ag_medidores(plano: str, ids=(), descs=()) -> list[dict]:
+    """Leituras que precisam ser digitadas: uma por atividade do plano ([[baixa_telegram.leituras]]).
+    Ex.: Leitura de gás → atividade "(COZINHA)" = Gás cozinha; "(AR CONDICIONADO)" = Gás ar cond."""
+    t = normalizar(plano)
+    for item in ag_cfg().get("leituras", []):
+        pal = [w for w in normalizar(item.get("plano", "")).split() if w.lower() not in _AG_VAZIAS]
+        if not pal or not all(w in t for w in pal) or any(normalizar(x) in t for x in item.get("sem", [])):
+            continue
+        out = []
+        for tid, desc in zip(ids, descs):
+            dn = normalizar(desc)
+            for m in item.get("medidores", []):
+                if all(normalizar(c) in dn for c in m.get("contem", [])):
+                    if not any(o["nome"] == m["nome"] for o in out):
+                        out.append({"nome": m["nome"], "tarefa": str(tid)})
+                    break
+        return out
+    return []
+
+
+def _num_br(txt: str) -> float:
+    return float(txt.replace(".", "").replace(",", "."))
+
+
+def _fmt_br(v: float) -> str:
+    return f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def ag_ultima_leitura(medidor: str):
+    """Última leitura registrada (pelo Telegram, ou a inicial do config)."""
+    d = ler(ARQ_AG, {})
+    u = (d.get("leituras") or {}).get(medidor)
+    if u:
+        return u
+    ini = (ag_cfg().get("leitura_inicial") or {}).get(medidor)
+    return {"valor": ini, "em": ""} if ini else None
+
+
+def _ag_n_fotos(p: dict) -> int:
+    return len(p.get("fotos", [])) + sum(len(v) for v in (p.get("fotos_med") or {}).values())
+
+
+def _ag_falta_foto(p: dict):
+    """Nome do medidor sem foto (planos de leitura) / True se o plano exige foto e não tem nenhuma."""
+    if not p.get("foto_obrig"):
+        return None
+    if p.get("medidores"):
+        for m in p["medidores"]:
+            if not (p.get("fotos_med") or {}).get(m["nome"]):
+                return m["nome"]
+        return None
+    return True if not p.get("fotos") else None
+
+
+def _ag_proximo_medidor(p: dict):
+    for m in p.get("medidores", []):
+        if m["nome"] not in p.get("leituras", {}):
+            return m["nome"]
+    return None
+
+
+def _ag_texto(p: dict, quem: str = "") -> str:
+    L = [f"📲 <b>Baixar no Leankeep: {esc(p['plano'].title())}</b>", ""]
+    L += [f"• {esc(x)}" for x in p["desc"][:15]]
+    if len(p["desc"]) > 15:
+        L.append(f"• … e mais {len(p['desc']) - 15}")
+    if p.get("medidores"):
+        L += ["", "<b>Leituras</b> (digite igual à tabela, ex.: <code>1.770.510,25</code>)"]
+        for m in (x["nome"] for x in p["medidores"]):
+            v = (p.get("leituras") or {}).get(m)
+            if v:
+                L.append(f"• {esc(m)}: <b>{esc(v['texto'])}</b>" + (f" · consumo {_fmt_br(v['consumo'])}" if v.get("consumo") is not None else "")
+                         + (" · foto ✅" if (p.get("fotos_med") or {}).get(m) else (" · falta foto ❗" if p.get("foto_obrig") else " ✅")))
+            else:
+                L.append(f"• {esc(m)}: <i>falta digitar</i>" + (" · foto ✅" if (p.get("fotos_med") or {}).get(m) else "") + " ❗")
+    L += ["", f"Observação: <b>{esc(p['obs'])}</b>" if p.get("obs") else
+          "Observação: <i>nenhuma (para incluir, responda com o texto começando por obs:)</i>"]
+    L += [f"Hora da baixa: <b>agora</b> · Executor: <b>{esc(quem or 'quem tocar em Baixar')}</b>",
+          f"Fotos: <b>{_ag_n_fotos(p)}</b>" + (" 📷" if _ag_n_fotos(p) else "")
+          + (" · <b>foto obrigatória</b> ❗" if _ag_falta_foto(p) else ""), ""]
+    prox = _ag_proximo_medidor(p) or (_ag_falta_foto(p) if p.get("medidores") else None)
+    if prox:
+        L.append(f"<i>Responda esta mensagem com a leitura e a foto de <b>{esc(prox)}</b>"
+                 + (" (um medidor de cada vez, na ordem da lista)" if len(p.get("medidores", [])) > 1 else "")
+                 + ". Depois toque em ✅ Baixar agora.</i>")
+    elif p.get("foto_obrig") and not _ag_falta_foto(p):
+        L.append("<i>Tudo pronto: toque em ✅ Baixar agora.</i>")
+    elif p.get("foto_obrig"):
+        L.append("<i>Este plano precisa de foto: responda esta mensagem com a foto. Depois toque em ✅ Baixar agora.</i>")
+    else:
+        L.append("<i>Para anexar foto, responda esta mensagem com a foto. Depois toque em ✅ Baixar agora.</i>")
+    return "\n".join(L)
+
+
+def _ag_kb(mid) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Baixar agora", callback_data=f"ag|s|{mid}"),
+                                  InlineKeyboardButton("✖️ Cancelar", callback_data=f"ag|x|{mid}")]])
+
+
+async def ag_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if MODO != "leankeep":
+        await q.answer("Sem acesso ao Leankeep agora.", show_alert=True)
+        return
+    p = q.data.split("|")
+    chat = q.message.chat.id
+    top = q.message.message_thread_id if q.message.is_topic_message else None
+    if p[1] == "c":  # botão nas cobranças
+        try:
+            cob = CFG["cobrancas"][int(p[2])]
+        except Exception:
+            await q.answer("Essa cobrança não existe mais.")
+            return
+        await q.answer("Vendo o que falta no Leankeep…")
+        await ag_listar(context.bot, chat, top, cob, responder_a=q.message.message_id)
+        return
+    d = ler(ARQ_AG, {})
+    if p[1] == "p":  # escolheu o plano: mensagem de conferência (foto respondendo, opcional)
+        try:
+            g = d["listas"][p[2]][int(p[3])]
+        except Exception:
+            await q.answer("Essa lista é antiga. Peça de novo.", show_alert=True)
+            return
+        await q.answer()
+        pend = dict(g, fotos=[], pedido_por=q.from_user.id, foto_obrig=ag_foto_obrigatoria(g["plano"], g["desc"]),
+                    medidores=ag_medidores(g["plano"], g["ids"], g["desc"]), leituras={})
+        m = await enviar(context.bot, chat, _ag_texto(pend, q.from_user.first_name), message_thread_id=top)
+        if m is not None:
+            d.setdefault("pend", {})[str(m.message_id)] = pend
+            d["pend"] = dict(list(d["pend"].items())[-30:])
+            gravar(ARQ_AG, d)
+            await context.bot.edit_message_reply_markup(chat, m.message_id, reply_markup=_ag_kb(m.message_id))
+        return
+    mid = p[2]
+    pend = (d.get("pend") or {}).get(mid)
+    if not pend:
+        await q.answer("Essa baixa já foi feita ou cancelada.")
+        return
+    if p[1] == "x":
+        d["pend"].pop(mid, None)
+        gravar(ARQ_AG, d)
+        await q.answer("Cancelado.")
+        try:
+            await q.edit_message_reply_markup(None)
+        except Exception:
+            pass
+        return
+    if p[1] != "s":
+        return
+    if pend.get("baixando"):
+        await q.answer("Já estou baixando ✅")
+        return
+    falta = _ag_proximo_medidor(pend)
+    if falta:
+        await q.answer(f"🔢 Falta a leitura de {falta}. Responda a mensagem com o número (ex.: 1.770.510,25).",
+                       show_alert=True)
+        return
+    ff = _ag_falta_foto(pend)
+    if ff:
+        await q.answer(f"📷 Falta a foto{'' if ff is True else ' de ' + ff}. Responda a mensagem com a foto e toque em Baixar de novo.",
+                       show_alert=True)
+        return
+    pend["baixando"] = True
+    gravar(ARQ_AG, d)
+    await q.answer("Baixando no Leankeep…")
+    quem = q.from_user
+    try:
+        await q.edit_message_text(limpar_texto(_ag_texto(pend, quem.first_name) + "\n\nBaixando no Leankeep… ⏳"),
+                                  parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+    unidade_id = int(ag_cfg().get("unidade_id", 57896))
+    try:
+        fotos = []
+        for fid in pend.get("fotos", [])[:15]:
+            f = await context.bot.get_file(fid)
+            fotos.append(bytes(await f.download_as_bytearray()))
+        fotos_t = {}
+        tarefa_nome = {m["nome"]: m["tarefa"] for m in pend.get("medidores", [])}
+        for nome, fids in (pend.get("fotos_med") or {}).items():
+            for fid in fids[:15]:
+                f = await context.bot.get_file(fid)
+                fotos_t.setdefault(tarefa_nome[nome], []).append(bytes(await f.download_as_bytearray()))
+        executor = await asyncio.to_thread(_ag_executor, quem.id, unidade_id)
+        agora = datetime.now(FUSO).replace(tzinfo=None)
+        obs = f"Baixa pelo Telegram por {quem.full_name}"
+        if pend.get("obs"):
+            obs = pend["obs"] + " | " + obs
+        if pend.get("leituras"):
+            obs += " | Leituras: " + "; ".join(f"{m}: {v['texto']}" for m, v in pend["leituras"].items())
+        tarefa_de = {m["nome"]: m["tarefa"] for m in pend.get("medidores", [])}
+        med = {tarefa_de[n]: v["valor"] for n, v in (pend.get("leituras") or {}).items() if n in tarefa_de}
+        obs_t = {tarefa_de[n]: f"Leitura {n}: {v['texto']}" + (f" | {pend['obs']}" if pend.get("obs") else "")
+                 for n, v in (pend.get("leituras") or {}).items() if n in tarefa_de}
+        if pend.get("obs"):
+            for t in pend["ids"]:
+                obs_t.setdefault(str(t), pend["obs"])
+        res = await asyncio.wait_for(asyncio.to_thread(
+            LK.baixar, pend["ids"], unidade_id, agora, [(executor, None)], obs, fotos, med, obs_t, fotos_t), 240)
+    except Exception as e:
+        pend["baixando"] = False
+        gravar(ARQ_AG, d)
+        log.exception("Baixa pelo Telegram falhou")
+        await enviar(context.bot, chat, f"⚠️ Não consegui baixar <b>{esc(pend['plano'].title())}</b> no Leankeep.\n"
+                                        f"<i>{esc(str(e)[:250])}</i>", message_thread_id=top, reply_markup=_ag_kb(mid))
+        return
+    d = ler(ARQ_AG, {})
+    (d.get("pend") or {}).pop(mid, None)
+    hist = d.setdefault("historico", [])
+    hist.append({"plano": pend["plano"], "ids": res.get("baixadas", []), "quem": quem.full_name,
+                 "em": datetime.now(FUSO).isoformat(timespec="minutes"), "fotos": res.get("fotos", 0)})
+    d["historico"] = hist[-200:]
+    for m, v in (pend.get("leituras") or {}).items():
+        d.setdefault("leituras", {})[m] = {"valor": v["valor"], "texto": v["texto"],
+                                           "em": datetime.now(FUSO).isoformat(timespec="minutes"), "quem": quem.full_name}
+    gravar(ARQ_AG, d)
+    if res.get("ja_baixadas"):
+        txt = f"✅ <b>{esc(pend['plano'].title())}</b>: já estava tudo baixado no Leankeep."
+    else:
+        n = len(res.get("baixadas", []))
+        txt = (f"✅ <b>{esc(pend['plano'].title())}</b> baixado no Leankeep por {_mencao_usuario(quem)} "
+               f"às {datetime.now(FUSO):%H:%M} ({n} atividade{'s' if n != 1 else ''})"
+               + (f" · {res['fotos']} foto(s)" if res.get("fotos") else "")
+               + "".join(f"\n• {esc(m)}: <b>{esc(v['texto'])}</b>"
+                         + (f" (consumo {_fmt_br(v['consumo'])})" if v.get("consumo") is not None else "")
+                         for m, v in (pend.get("leituras") or {}).items())
+               + (f"\n<i>{res['fotos_pedidas'] - res['fotos']} foto(s) não subiram ⚠️</i>"
+                  if res.get("fotos_pedidas", 0) > res.get("fotos", 0) else ""))
+    try:
+        await q.edit_message_text(limpar_texto(txt), parse_mode=ParseMode.HTML)
+    except Exception:
+        await enviar(context.bot, chat, txt, message_thread_id=top)
+    try:
+        await reagir(context.bot, q.message, lk_agr_cfg().get("reacao", "👏"))
+    except Exception:
+        pass
+
+
+_USUARIOS_LK: dict = {}
+
+
+def _ag_executor(telegram_id: int, unidade_id: int) -> int:
+    """Quem tocou em Baixar, como usuário do Leankeep (pelo /cadastrar). Sem cadastro: o usuário padrão."""
+    padrao = int(ag_cfg().get("executor_padrao", 84106))
+    c = cadastros().get(str(telegram_id))
+    if not c or not c.get("nome_leankeep"):
+        return padrao
+    if unidade_id not in _USUARIOS_LK:
+        try:
+            _USUARIOS_LK[unidade_id] = LK.usuarios_unidade(unidade_id)
+        except Exception as e:
+            log.warning("Leankeep: não consegui a lista de usuários: %s", e)
+            _USUARIOS_LK[unidade_id] = []
+    alvo = normalizar(c["nome_leankeep"])
+    for u in _USUARIOS_LK[unidade_id]:
+        if alvo in (normalizar(str(u.get("nome", ""))), normalizar(str(u.get("login", "")))):
+            return int(u.get("usuario") or u.get("id") or u.get("usuarioId") or padrao)
+    return padrao
+
+
+async def ag_resposta(update: Update, context) -> bool:
+    """Foto ou leitura respondendo a uma mensagem de 'Baixar no Leankeep'."""
+    msg = update.effective_message
+    if not msg or not msg.reply_to_message or not (msg.photo or msg.text):
+        return False
+    alvo = msg.reply_to_message.message_id
+    d = ler(ARQ_AG, {})
+    pend = (d.get("pend") or {}).get(str(alvo))
+    if not pend:
+        return False
+    if msg.photo:
+        fid = msg.photo[-1].file_id
+        meds = [m["nome"] for m in pend.get("medidores", [])]
+        fm = pend.setdefault("fotos_med", {})
+        sem = [m for m in meds if not fm.get(m)]
+        if meds:
+            fm.setdefault(sem[0] if sem else meds[-1], []).append(fid)
+        else:
+            pend.setdefault("fotos", []).append(fid)
+        await reagir(context.bot, msg, "👍")
+    else:
+        texto = msg.text.strip()
+        if texto.lower().startswith(("obs:", "obs ", "observação", "observacao")):
+            texto = re.sub(r"^(obs|observa[cç][aã]o)\s*:?\s*", "", texto, flags=re.I)
+            numeros = []
+        else:
+            numeros = re.findall(r"[\d.,]+\d", texto) if _ag_proximo_medidor(pend) else []
+        if not numeros:
+            # sem leitura para digitar (ou texto sem números): vira a observação da baixa
+            pend["obs"] = (pend.get("obs", "") + " " + texto).strip()[:500]
+            gravar(ARQ_AG, d)
+            await reagir(context.bot, msg, "✍")
+            try:
+                await context.bot.edit_message_text(limpar_texto(_ag_texto(pend)), chat_id=msg.chat.id,
+                                                    message_id=alvo, parse_mode=ParseMode.HTML,
+                                                    reply_markup=_ag_kb(alvo))
+            except Exception:
+                pass
+            return True
+        erros = []
+        for n in numeros:
+            med = _ag_proximo_medidor(pend)
+            if not med:
+                break
+            if not _RE_LEITURA.match(n):
+                erros.append(f"<b>{esc(n)}</b> não está no formato da tabela. Digite assim: <code>1.770.510,25</code> "
+                             "(ponto no milhar, vírgula e 2 casas).")
+                break
+            v = _num_br(n)
+            ult = ag_ultima_leitura(med)
+            ant = _num_br(ult["valor"]) if ult and isinstance(ult.get("valor"), str) else (ult or {}).get("valor")
+            if ant is not None and v < ant:
+                erros.append(f"{esc(med)}: <b>{esc(n)}</b> é menor que a última leitura (<b>{_fmt_br(ant)}</b>). "
+                             "Confira o número.")
+                break
+            pend.setdefault("leituras", {})[med] = {"texto": n, "valor": v,
+                                                    "consumo": round(v - ant, 2) if ant is not None else None}
+        if erros:
+            await enviar(context.bot, msg.chat.id, "\n".join(erros) + " ⚠️",
+                         message_thread_id=msg.message_thread_id if msg.is_topic_message else None,
+                         reply_to_message_id=msg.message_id)
+        else:
+            await reagir(context.bot, msg, "👍")
+    gravar(ARQ_AG, d)
+    try:
+        await context.bot.edit_message_text(limpar_texto(_ag_texto(pend)), chat_id=msg.chat.id, message_id=alvo,
+                                            parse_mode=ParseMode.HTML, reply_markup=_ag_kb(alvo))
+    except Exception:
+        pass
+    return True
+
+
+async def cmd_baixar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/baixar – lista as atividades pendentes de hoje no Leankeep para baixar pelo Telegram."""
+    if MODO != "leankeep":
+        await update.effective_message.reply_text("Sem acesso ao Leankeep agora.")
+        return
+    m = update.effective_message
+    await ag_listar(context.bot, m.chat.id, m.message_thread_id if m.is_topic_message else None,
+                    responder_a=m.message_id)
+
+
 # =====================================================================
 #  BOTÕES NAS COBRANÇAS/LEMBRETES: Baixa realizada / Baixa pendente / Escrever mensagem
 # =====================================================================
@@ -3045,7 +3456,8 @@ def botoes_baixa(cob):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Baixa realizada", callback_data=f"bx|r|{i}"),
          InlineKeyboardButton("⏳ Baixa pendente", callback_data=f"bx|p|{i}")],
-        [InlineKeyboardButton("✍️ Escrever mensagem", callback_data=f"bx|m|{i}")]])
+        [InlineKeyboardButton("✍️ Escrever mensagem", callback_data=f"bx|m|{i}"),
+         InlineKeyboardButton("📲 Baixar no Leankeep", callback_data=f"ag|c|{i}")]])
 
 
 def registrar_resposta(cob, quem, tipo, texto=""):
@@ -5177,6 +5589,8 @@ async def msg_privada(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     if not msg or not msg.text or not _eh_gestor(update):
         return
+    if msg.reply_to_message and await ag_resposta(update, context):
+        return
     if await sg_resposta_privada(update, context):
         return
     pend = al_pendente(update.effective_user.id)
@@ -5353,6 +5767,8 @@ def montar_app(token: str) -> Application:
     app.add_handler(CommandHandler("auditoria", cmd_auditoria))
     app.add_handler(CommandHandler("seguimento", cmd_seguimento))
     app.add_handler(CommandHandler("relatorio", cmd_relatorio))
+    app.add_handler(CommandHandler("baixar", cmd_baixar))
+    app.add_handler(CallbackQueryHandler(ag_botao, pattern=r"^ag\|"))
     app.add_handler(CallbackQueryHandler(botao_reenviar_grupo, pattern=r"^rg\|"))
     app.add_handler(CommandHandler("relatorio_email", cmd_relatorio_email))
     app.add_handler(CallbackQueryHandler(botao_relatorio, pattern=r"^rs\|"))
