@@ -645,19 +645,48 @@ CAMPO_CORR = {"status": PC + "TipoAcaoCorretivaEmpresa", "inicio": PC + "Inicio"
               "descricao": PC + "Descricao", "foto_state": "ctl01_PageContent_FotoAsyncUpload_ClientState"}
 
 
+def _codigo_no_html(html: str, numero: str) -> str | None:
+    """Acha o link de edição da linha que tem o número (o link vem ANTES do número, na mesma linha)."""
+    for m in re.finditer(re.escape(numero), html):
+        trecho = html[max(0, m.start() - 4000):m.start()]
+        links = list(re.finditer(r"EditAnomaliasPage\.aspx\?Anomalias=([^&'\"\s]+)", trecho))
+        if links:
+            return links[-1].group(1)
+    return None
+
+
 def codigo_ocorrencia(lg: "Legado", numero: str) -> str:
     """Procura a ocorrência pelo número (ex.: D171431) no Painel e devolve o código do link dela."""
+    numero = numero.strip().upper()
     r = lg._get(URL_PAINEL)
+    pagina0 = r.text
     pc = "ctl00$PageContent$"
-    r = lg._enviar_form(str(r.url), r.text, {pc + "ProcurarPorFilter": "CQA",
-                                              pc + "AnomaliasNlistSearchText1": numero,
-                                              pc + "StatusFilter2": ["1", "2", "3", "4", "5"],
-                                              pc + "SearchButton2.x": "4", pc + "SearchButton2.y": "4"})
-    m = re.search(r"EditAnomaliasPage\.aspx\?Anomalias=([^&'\"]+)&amp;[^>]*>\s*N(?:º|°|o|&#186;|&ordm;|&#176;)?\.?\s*"
-                  + re.escape(numero) + r"\s*<", r.text)
-    if not m:
-        raise RuntimeError(f"não achei a ocorrência {numero} no Painel de Ocorrências do Leankeep")
-    return m.group(1)
+    tentativas = [
+        {pc + "ProcurarPorFilter": "CQA", pc + "AnomaliasNlistSearchText1": numero,
+         pc + "StatusFilter2": ["1", "2", "3", "4", "5"], pc + "SearchButton2.x": "4", pc + "SearchButton2.y": "4"},
+        {pc + "ProcurarPorFilter": "CQA", pc + "AnomaliasNlistSearchText1": numero.lstrip("D"),
+         pc + "StatusFilter2": ["1", "2", "3", "4", "5"], pc + "SearchButton2.x": "4", pc + "SearchButton2.y": "4"},
+        {pc + "AnomaliasNlistSearchText1": numero, pc + "SearchButton2.x": "4", pc + "SearchButton2.y": "4"},
+    ]
+    diag = []
+    for extra in tentativas:
+        try:
+            r2 = lg._enviar_form(str(r.url), pagina0, extra)
+        except Exception as e:
+            diag.append(f"busca falhou: {e}")
+            continue
+        cod = _codigo_no_html(r2.text, numero)
+        if cod:
+            return cod
+        titulo = (re.search(r"<title>\s*(.*?)\s*</title>", r2.text, re.S) or [None, "?"])[1][:40]
+        total = re.search(r"Total de\s*(\d+)\s*itens", _limpo(r2.text))
+        diag.append(f"página '{titulo}', {r2.text.count('EditAnomaliasPage.aspx?Anomalias=')} links, "
+                    f"total {total.group(1) if total else '?'}, número na página: {numero in r2.text}")
+    cod = _codigo_no_html(pagina0, numero)  # às vezes já está na 1ª página
+    if cod:
+        return cod
+    raise RuntimeError(f"não achei a ocorrência {numero} no Painel de Ocorrências do Leankeep "
+                       f"({' | '.join(diag)[:300]})")
 
 
 def seguimento(token: str, refresh: str | None, numero: str, status: str, descricao: str = "",
