@@ -843,13 +843,23 @@ def _linha_da_ocorrencia(html: str, numero: str) -> list[str]:
     return achadas
 
 
+
+def _cookies_como_navegador(lg: "Legado", empresa_id: str):
+    """A Lista de Ocorrências lê os filtros globais dos cookies (iguais aos do navegador): sem eles vem vazia."""
+    for dom in ("app.leankeep.com", ".leankeep.com"):
+        lg.http.cookies.set("companies", json.dumps({"id": str(empresa_id), "name": "Coco Bambu"},
+                                                    separators=(",", ":"), ensure_ascii=False), domain=dom, path="/")
+        for nome in ("unitGroups", "unitSubgroups", "units", "states", "cities", "providers"):
+            lg.http.cookies.set(nome, "", domain=dom, path="/")
+
 def excluir(token: str, refresh: str | None, numero: str, empresa_id: str = "3802") -> str:
     """Exclui a ocorrência no Leankeep (só ela). Devolve 'ok' depois de conferir que sumiu da lista."""
     numero = numero.strip().upper()
     lg = Legado(token, refresh, empresa_id)
+    _cookies_como_navegador(lg, empresa_id)
     diag, linhas, r = [], [], None
-    for v in (0, 1, 2):
-        r = _buscar_lista(lg, numero, v)
+    for v in (-1, 0, 1, 2):  # -1 = a lista como abre, sem buscar (as mais recentes vêm na 1ª página)
+        r = lg._get(URL_LISTA_OC) if v == -1 else _buscar_lista(lg, numero, v)
         linhas = _linha_da_ocorrencia(r.text, numero)
         if len(linhas) == 1:
             break
@@ -871,6 +881,7 @@ def excluir(token: str, refresh: str | None, numero: str, empresa_id: str = "380
     r2.raise_for_status()
     avisos = re.findall(r"""alert\(\s*['"]([^'"]{3,200})['"]""", r2.text)
     # confere: a ocorrência não pode mais aparecer na busca
-    if _linha_da_ocorrencia(_buscar_lista(lg, numero, v).text, numero):
+    if _linha_da_ocorrencia(_buscar_lista(lg, numero, max(v, 0)).text, numero) or \
+            _linha_da_ocorrencia(lg._get(URL_LISTA_OC).text, numero):
         raise RuntimeError("o Leankeep não excluiu" + (f": {' | '.join(avisos)[:200]}" if avisos else ""))
     return "ok"
