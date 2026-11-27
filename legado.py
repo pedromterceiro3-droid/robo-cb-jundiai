@@ -814,13 +814,23 @@ def seguimento(token: str, refresh: str | None, numero: str, status: str, descri
 URL_LISTA_OC = "/Anomalias/ShowListaAnomaliasPage.aspx"
 
 
-def _buscar_lista(lg: "Legado", numero: str):
+def _buscar_lista(lg: "Legado", numero: str, variante: int = 0):
     r = lg._get(URL_LISTA_OC)
     pc = "ctl00$PageContent$"
-    return lg._enviar_form(str(r.url), r.text, {
-        pc + "ProcurarPorFilter1": "CQA", pc + "AnomaliasUltimasAcoesNListSearchText1": numero,
-        pc + "StatusAnomaliaFilter2": ["1", "2", "3", "4", "5"],
-        pc + "SearchButton3.x": "4", pc + "SearchButton3.y": "4"})
+    extra = {pc + "AnomaliasUltimasAcoesNListSearchText1": numero,
+             pc + "SearchButton3.x": "4", pc + "SearchButton3.y": "4"}
+    if variante in (0, 1):
+        extra[pc + "ProcurarPorFilter1"] = "CQA"
+    if variante == 0:
+        extra[pc + "StatusAnomaliaFilter2"] = ["1", "2", "3", "4", "5"]
+    if variante == 2:  # sem filtros de data, caso a sessão do robô venha com período
+        _, campos = _ler_form(r.text)
+        for k in campos:
+            if re.search(r"Data\w*Filter\d*$", k):
+                extra[k] = ""
+        extra[pc + "ProcurarPorFilter1"] = "CQA"
+        extra[pc + "StatusAnomaliaFilter2"] = ["1", "2", "3", "4", "5"]
+    return lg._enviar_form(str(r.url), r.text, extra)
 
 
 def _linha_da_ocorrencia(html: str, numero: str) -> list[str]:
@@ -837,11 +847,19 @@ def excluir(token: str, refresh: str | None, numero: str, empresa_id: str = "380
     """Exclui a ocorrência no Leankeep (só ela). Devolve 'ok' depois de conferir que sumiu da lista."""
     numero = numero.strip().upper()
     lg = Legado(token, refresh, empresa_id)
-    r = _buscar_lista(lg, numero)
-    linhas = _linha_da_ocorrencia(r.text, numero)
+    diag, linhas, r = [], [], None
+    for v in (0, 1, 2):
+        r = _buscar_lista(lg, numero, v)
+        linhas = _linha_da_ocorrencia(r.text, numero)
+        if len(linhas) == 1:
+            break
+        titulo = (re.search(r"<title>\s*(.*?)\s*</title>", r.text, re.S) or [None, "?"])[1][:35]
+        n_linhas = r.text.count('$SelectRow"')
+        diag.append(f"v{v}: '{titulo}', {n_linhas} linhas, número {r.text.count(numero)}x, "
+                    f"{str(r.url)[-35:]}")
     if len(linhas) != 1:
         raise RuntimeError(f"não excluí: achei {len(linhas)} linha(s) com o número {numero} na Lista de Ocorrências "
-                           f"(preciso de exatamente 1)")
+                           f"(preciso de exatamente 1). " + " | ".join(diag)[:350])
     # só a caixinha desta ocorrência marcada (o formulário não traz nenhuma outra marcada)
     action, campos = _ler_form(r.text)
     campos = {k: v for k, v in campos.items() if not k.endswith("$SelectRow") and not k.endswith("$ToggleAll")}
@@ -853,6 +871,6 @@ def excluir(token: str, refresh: str | None, numero: str, empresa_id: str = "380
     r2.raise_for_status()
     avisos = re.findall(r"""alert\(\s*['"]([^'"]{3,200})['"]""", r2.text)
     # confere: a ocorrência não pode mais aparecer na busca
-    if _linha_da_ocorrencia(_buscar_lista(lg, numero).text, numero):
+    if _linha_da_ocorrencia(_buscar_lista(lg, numero, v).text, numero):
         raise RuntimeError("o Leankeep não excluiu" + (f": {' | '.join(avisos)[:200]}" if avisos else ""))
     return "ok"
