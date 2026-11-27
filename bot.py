@@ -3063,7 +3063,7 @@ async def _ag_pendentes(cob=None) -> list:
             for p, lst in sorted(planos.items(), key=lambda x: min((a.data for a in x[1] if a.data), default=""))]
 
 
-async def ag_listar(bot, chat, top, cob=None, responder_a=None):
+async def ag_listar(bot, chat, top, cob=None, responder_a=None, teste=False):
     try:
         grupos = await _ag_pendentes(cob)
     except Exception as e:
@@ -3079,9 +3079,11 @@ async def ag_listar(bot, chat, top, cob=None, responder_a=None):
     d["listas"] = dict(list(d["listas"].items())[-20:])
     gravar(ARQ_AG, d)
     bts = [[InlineKeyboardButton(f"{_ag_nome(g['plano'], 40)} · {len(g['ids'])} atividade{'s' if len(g['ids']) != 1 else ''}",
-                                 callback_data=f"ag|p|{chave}|{i}")]
+                                 callback_data=f"ag|p|{chave}|{i}|{'t' if teste else ''}")]
            for i, g in enumerate(grupos[:20])]
     titulo = f"<b>{esc(cob['nome'])}</b>" if cob else f"<b>Atividades pendentes hoje</b> ({hoje():%d/%m})"
+    if teste:
+        titulo = "<b>MODO TESTE</b> (nada é gravado no Leankeep) 🧪\n" + titulo
     await enviar(bot, chat, f"📲 {titulo}\nQual plano você vai baixar no Leankeep? 👇", message_thread_id=top,
                  reply_markup=InlineKeyboardMarkup(bts), reply_to_message_id=responder_a)
 
@@ -3172,6 +3174,9 @@ def _ag_nome(plano: str, limite: int = 0) -> str:
 
 def _ag_texto(p: dict, quem: str = "") -> str:
     L = [f"📲 <b>Baixar no Leankeep: {esc(_ag_nome(p['plano']))}</b>", ""]
+    if p.get("teste"):
+        L = [f"🧪 <b>TESTE · Baixar no Leankeep: {esc(_ag_nome(p['plano']))}</b>",
+             "<i>Modo teste: nada será gravado no Leankeep.</i>", ""]
     L += [f"• {esc(x)}" for x in p["desc"][:15]]
     if len(p["desc"]) > 15:
         L.append(f"• … e mais {len(p['desc']) - 15}")
@@ -3250,7 +3255,8 @@ async def ag_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await q.answer()
         pend = dict(g, fotos=[], pedido_por=q.from_user.id, quem=q.from_user.first_name, foto_obrig=ag_foto_obrigatoria(g["plano"], g["desc"]),
-                    medidores=ag_medidores(g["plano"], g["ids"], g["desc"]), leituras={})
+                    medidores=ag_medidores(g["plano"], g["ids"], g["desc"]), leituras={},
+                    teste=len(p) > 4 and p[4] == "t")
         m = await enviar(context.bot, chat, _ag_texto(pend, q.from_user.first_name), message_thread_id=top)
         if m is not None:
             d.setdefault("pend", {})[str(m.message_id)] = pend
@@ -3298,7 +3304,14 @@ async def ag_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
         return
-    if p[1] != "s":
+    if p[1] == "v":  # voltou da confirmação
+        await q.answer()
+        try:
+            await q.edit_message_reply_markup(_ag_kb(mid, pend))
+        except Exception:
+            pass
+        return
+    if p[1] not in ("s", "S"):
         return
     if pend.get("baixando"):
         await q.answer("Já estou baixando ✅")
@@ -3313,10 +3326,39 @@ async def ag_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer(f"📷 Falta a foto{'' if ff is True else ' de ' + ff}. Responda a mensagem com a foto e toque em Baixar de novo.",
                        show_alert=True)
         return
+    quem = q.from_user
+    if p[1] == "s":  # 1º toque: pede confirmação (evita baixa sem querer)
+        await q.answer()
+        n = len(pend["ids"])
+        rot = "🧪 Sim, simular a baixa" if pend.get("teste") else f"✅ Sim, baixar {n} atividade{'s' if n != 1 else ''}"
+        try:
+            await q.edit_message_reply_markup(InlineKeyboardMarkup([
+                [InlineKeyboardButton(rot, callback_data=f"ag|S|{mid}")],
+                [InlineKeyboardButton("↩️ Voltar", callback_data=f"ag|v|{mid}")]]))
+        except Exception:
+            pass
+        return
+    if pend.get("teste"):  # modo teste: mostra o que seria enviado e não grava nada
+        d["pend"].pop(mid, None)
+        gravar(ARQ_AG, d)
+        await q.answer("Teste concluído. Nada foi gravado.")
+        L = [f"🧪 <b>TESTE concluído: {esc(_ag_nome(pend['plano']))}</b>",
+             "<i>Nada foi gravado no Leankeep.</i> Na baixa de verdade iria:", "",
+             f"• {len(pend['ids'])} atividade(s) como <b>Realizada</b> às {datetime.now(FUSO):%H:%M}, executor {esc(quem.first_name)}"]
+        for m, v in (pend.get("leituras") or {}).items():
+            L.append(f"• Medição {esc(m)}: <b>{esc(v['texto'])}</b>")
+        if _ag_n_fotos(pend):
+            L.append(f"• {_ag_n_fotos(pend)} foto(s)")
+        if pend.get("obs"):
+            L.append(f"• Observação: {esc(pend['obs'])}")
+        try:
+            await q.edit_message_text(limpar_texto("\n".join(L)), parse_mode=ParseMode.HTML)
+        except Exception:
+            await enviar(context.bot, chat, "\n".join(L), message_thread_id=top)
+        return
     pend["baixando"] = True
     gravar(ARQ_AG, d)
     await q.answer("Baixando no Leankeep…")
-    quem = q.from_user
     try:
         await q.edit_message_text(limpar_texto(_ag_texto(pend, quem.first_name) + "\n\nBaixando no Leankeep… ⏳"),
                                   parse_mode=ParseMode.HTML)
@@ -3504,8 +3546,9 @@ async def cmd_baixar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("Sem acesso ao Leankeep agora.")
         return
     m = update.effective_message
+    teste = bool(context.args) and normalizar(context.args[0]).startswith("TEST")
     await ag_listar(context.bot, m.chat.id, m.message_thread_id if m.is_topic_message else None,
-                    responder_a=m.message_id)
+                    responder_a=m.message_id, teste=teste)
 
 
 # =====================================================================
