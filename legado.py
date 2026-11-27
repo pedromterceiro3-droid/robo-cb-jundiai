@@ -649,14 +649,15 @@ def _codigo_no_html(html: str, numero: str) -> str | None:
     """Acha o link de edição da linha que tem o número (o link vem ANTES do número, na mesma linha)."""
     for m in re.finditer(re.escape(numero), html):
         trecho = html[max(0, m.start() - 4000):m.start()]
-        links = list(re.finditer(r"EditAnomaliasPage\.aspx\?Anomalias=([^&'\"\s]+)", trecho))
+        links = list(re.finditer(r"EditAnomaliasPage\.aspx\?(Anomalias=[^'\"\s<]+?)(?:&#39;|'|\"|\s|<)", trecho))
         if links:
-            return links[-1].group(1)
+            return unescape(links[-1].group(1))  # "Anomalias=...&RedirectStyle=...&Target=..."
     return None
 
 
 def codigo_ocorrencia(lg: "Legado", numero: str) -> str:
-    """Procura a ocorrência pelo número (ex.: D171431) no Painel e devolve o código do link dela."""
+    """Procura a ocorrência pelo número (ex.: D171431) no Painel e devolve a query do link dela
+    ("Anomalias=...&RedirectStyle=...&Target=...")."""
     numero = numero.strip().upper()
     r = lg._get(URL_PAINEL)
     pagina0 = r.text
@@ -689,6 +690,28 @@ def codigo_ocorrencia(lg: "Legado", numero: str) -> str:
                        f"({' | '.join(diag)[:300]})")
 
 
+
+def url_correcao_pela_ocorrencia(lg: "Legado", query: str) -> str | None:
+    """Abre a ocorrência (como no site) e clica em "Incluir Correção": devolve o endereço que o site abre."""
+    try:
+        r = lg._get("/Anomalias/EditAnomaliasPage.aspx?" + query)
+        m = re.search(r"(ctl0\d)\$PageContent\$TabContainer\$TabPanelAnomalia\$NewButton2", r.text)
+        if not m:
+            log.info("Leankeep antigo: botão Incluir Correção não achado na ocorrência")
+            return None
+        r2 = lg._enviar_form(str(r.url), r.text, {
+            "__EVENTTARGET": f"{m.group(1)}$PageContent$TabContainer$TabPanelAnomalia$NewButton2$_Button"})
+        achou = re.search(r"(?:\.\./Anomalias/)?(EditAcoesCorretivasPage\.aspx\?[^'\"\s<]+?)(?:&#39;|'|\"|\s|<)", r2.text)
+        if not achou:
+            log.info("Leankeep antigo: Incluir Correção não devolveu o endereço (%s)",
+                     (re.findall(r"alert\('([^']{0,120})", r2.text) or ["sem aviso"])[0])
+            return None
+        url = "/Anomalias/" + unescape(achou.group(1))
+        return re.sub(r"&currentDate=[^&]*|&currentTime=[^&]*", "", url)
+    except Exception as e:
+        log.info("Leankeep antigo: Incluir Correção falhou: %s", e)
+        return None
+
 def seguimento(token: str, refresh: str | None, numero: str, status: str, descricao: str = "",
                foto: bytes | None = None, quando: datetime | None = None, empresa_id: str = "3802") -> str:
     """Inclui uma correção (seguimento) na ocorrência. status = código de STATUS_CORRECAO.
@@ -698,9 +721,12 @@ def seguimento(token: str, refresh: str | None, numero: str, status: str, descri
     if status == SOLUCIONADA and not foto:
         raise RuntimeError("para Solucionada o Leankeep exige a foto da resolução")
     base = Legado(token, refresh, empresa_id)
-    codigo = codigo_ocorrencia(base, numero)
-    lg = Legado(token, refresh, empresa_id, url_novo=URL_CORRECAO.format(codigo=codigo),
-                marca=("", "TipoAcaoCorretivaEmpresa"), campo=CAMPO_CORR).abrir()
+    query = codigo_ocorrencia(base, numero)
+    codigo = re.match(r"Anomalias=([^&]+)", query).group(1)
+    url_corr = url_correcao_pela_ocorrencia(base, query) or URL_CORRECAO.format(codigo=codigo)
+    lg = Legado(token, refresh, empresa_id, url_novo=url_corr, marca=("", "TipoAcaoCorretivaEmpresa"), campo=CAMPO_CORR)
+    lg.http = base.http  # mesma sessão: o Leankeep guarda a ocorrência aberta na sessão
+    lg.abrir()
     # trocar o Status recarrega o formulário (igual ao site)
     if lg.campos.get(lg.c("status")) != status:
         lg.campos[lg.c("status")] = status
@@ -727,7 +753,7 @@ def seguimento(token: str, refresh: str | None, numero: str, status: str, descri
         raise RuntimeError("o Leankeep não salvou o seguimento. Avisos: " + " | ".join(dict.fromkeys(alertas + valid))[:300])
     # confere na própria ocorrência: a correção nova aparece na lista dela
     try:
-        o = base._get("/Anomalias/EditAnomaliasPage.aspx?Anomalias=" + codigo)
+        o = base._get("/Anomalias/EditAnomaliasPage.aspx?" + query)
         texto = _limpo(o.text)
         if STATUS_CORRECAO[status] in texto and q.strftime("%d/%m/%Y") in texto:
             return "ok"
