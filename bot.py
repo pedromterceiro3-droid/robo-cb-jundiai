@@ -484,7 +484,7 @@ async def cobrar_leankeep(context, cob, rodada):
     if m is not None:
         MSG_COBRANCA[m.message_id] = CFG["cobrancas"].index(cob)
     if CFG.get("copiar_cobrancas_gestor", True) and CFG.get("gestor_chat_id") and not TESTE.get():
-        await enviar(bot, CFG["gestor_chat_id"], texto)
+        await enviar(bot, CFG["gestor_chat_id"], texto, reply_markup=kb_reenviar(cob))
     if rodada == 1 and not TESTE.get():
         registrar_atrasadas(cob, data_ref(cob), ativs)
 
@@ -501,6 +501,70 @@ async def cobrar_leankeep(context, cob, rodada):
             txt += [f"   ▫️ {esc(legivel(a.descricao))}" for a in minhas[:30]]
             await enviar(bot, int(tid), "\n".join(txt))
 
+
+
+def tempo_prazo(fim: datetime, agora: datetime | None = None) -> str:
+    """'Faltam 5 min para o prazo (10:00)!' ou 'Prazo venceu há 1h15 (10:00)!' (emoji no fim da linha)."""
+    agora = agora or datetime.now(FUSO)
+    if fim.tzinfo is None:
+        fim = fim.replace(tzinfo=FUSO)
+    seg = int((fim - agora).total_seconds())
+    m = -(-seg // 60) if seg > 0 else abs(seg) // 60  # faltando: arredonda para cima (4min50s = "5 min")
+    dur = f"{m} min" if m < 60 else (f"{m // 60}h{m % 60:02d}" if m % 60 else f"{m // 60}h")
+    hora_txt = fim.strftime("%H:%M") if fim.date() == agora.date() else fim.strftime("%d/%m %H:%M")
+    if seg > 0:
+        return f"<b>Faltam {dur} para o prazo ({hora_txt})!</b> ⏳"
+    return f"<b>Prazo venceu há {dur} ({hora_txt})!</b> ⏰"
+
+
+def kb_reenviar(cob) -> InlineKeyboardMarkup:
+    i = CFG["cobrancas"].index(cob)
+    return InlineKeyboardMarkup([[InlineKeyboardButton("📣 Enviar novamente no grupo", callback_data=f"rg|{i}")]])
+
+
+async def botao_reenviar_grupo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """No privado do gestor: manda de novo o alerta da cobrança no grupo, com sirenes e o tempo até o prazo."""
+    q = update.callback_query
+    if not _eh_gestor(update):
+        await q.answer("Só o gestor pode reenviar.", show_alert=True)
+        return
+    try:
+        cob = CFG["cobrancas"][int(q.data.split("|")[1])]
+    except Exception:
+        await q.answer("Essa cobrança não existe mais.")
+        return
+    import time as _t
+    chave = f"{data_ref(cob).isoformat()}|{q.data}"
+    if _t.time() - REENVIO_FEITO.get(chave, 0) < 120:
+        await q.answer("Acabei de reenviar ✅", show_alert=False)
+        return
+    REENVIO_FEITO[chave] = _t.time()
+    await q.answer("Conferindo no Leankeep e reenviando…")
+    try:
+        ativs = sem_duplicadas(await buscar_pendentes(cob.get("palavras"), data_ref(cob), cob.get("excluir")))
+    except Exception as e:
+        REENVIO_FEITO.pop(chave, None)
+        await enviar(context.bot, q.message.chat.id, f"⚠️ Não consegui consultar o Leankeep: {esc(e)}")
+        return
+    if not ativs:
+        await enviar(context.bot, q.message.chat.id, f"✅ <b>{esc(cob['nome'])}</b>: já está tudo baixado no Leankeep. "
+                                                     f"Não reenviei no grupo.")
+        return
+    fim = prazo_dt(cob, data_ref(cob))
+    L = [f"🚨🚨 <b>{esc(cob['nome'].upper())}</b> 🚨🚨", "", tempo_prazo(fim), "",
+         f"Ainda sem baixa no Leankeep ({len(ativs)}): 🔴"]
+    L += bloco_atividades(ativs, cadastros(), limite=30)
+    if cob.get("marcar"):
+        L += ["", marcacoes(cob["marcar"])]
+    m = await enviar_grupo(context.bot, "\n".join(L), reply_markup=botoes_baixa(cob))
+    if m is not None:
+        MSG_COBRANCA[m.message_id] = CFG["cobrancas"].index(cob)
+    await enviar(context.bot, q.message.chat.id,
+                 f"📣 Reenviado no grupo: <b>{esc(cob['nome'])}</b> ({len(ativs)} pendente(s)) · "
+                 f"{tempo_prazo(fim).replace('<b>', '').replace('</b>', '')}")
+
+
+REENVIO_FEITO: dict = {}
 
 async def cobrar_so_gestor(bot, cob):
     """Cobrança que vai SÓ para o privado do gestor (ex.: Conferência da diretoria)."""
@@ -5221,6 +5285,7 @@ def montar_app(token: str) -> Application:
     app.add_handler(CommandHandler("auditoria", cmd_auditoria))
     app.add_handler(CommandHandler("seguimento", cmd_seguimento))
     app.add_handler(CommandHandler("relatorio", cmd_relatorio))
+    app.add_handler(CallbackQueryHandler(botao_reenviar_grupo, pattern=r"^rg\|"))
     app.add_handler(CommandHandler("relatorio_email", cmd_relatorio_email))
     app.add_handler(CallbackQueryHandler(botao_relatorio, pattern=r"^rs\|"))
     app.add_handler(CallbackQueryHandler(sg_botao, pattern=r"^sg\|"))

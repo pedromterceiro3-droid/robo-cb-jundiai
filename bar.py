@@ -432,9 +432,14 @@ async def tick(context):
             ver = f" · <a href=\"{link}\">ver cobrança</a>" if link else ""
             L.append(f"• <b>{B.esc(r.get('nome_curto', r['nome']))}</b> ({B.esc(rotulo)}): "
                      f"{situacao(r, feitos)} · {prazo} · {B.esc(nome_topico(r['topico']))}{ver}")
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ Feito: {r.get('nome_curto', r['nome'])[:28]}",
-                                                         callback_data=f"bf|{r['id']}|{pchave}")]
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ Feito: {r.get('nome_curto', r['nome'])[:22]}",
+                                                         callback_data=f"bf|{r['id']}|{pchave}"),
+                                    InlineKeyboardButton("📣 Reenviar no grupo", callback_data=f"bg|{r['id']}|{pchave}")]
                                    for r, _, _, _, _, pchave in privado])
+        reenv = d.setdefault("reenvio", {})
+        for r, nivel, rotulo, fim, feitos, pchave in privado:
+            reenv[f"{r['id']}|{pchave}"] = {"fim": fim.isoformat(), "rotulo": rotulo}
+        d["reenvio"] = dict(list(reenv.items())[-60:])
         await B.enviar(bot, g, "\n".join(L), reply_markup=kb)
 
     await lembrar_classificacao(bot, d, agora)
@@ -779,6 +784,41 @@ async def botao_classificar(update: Update, context):
                        cfg().get("reacao", "🙏"))
 
 
+
+async def botao_reenviar_bar(update: Update, context):
+    """No privado do gestor: manda de novo no grupo do bar a cobrança, com sirenes e o tempo do prazo."""
+    q = update.callback_query
+    if not B._eh_gestor(update):
+        await q.answer("Só o gestor pode reenviar.", show_alert=True)
+        return
+    _, rid, pchave = q.data.split("|", 2)
+    r = rot(rid)
+    d = dados()
+    info = (d.get("reenvio") or {}).get(f"{rid}|{pchave}")
+    if not r or not info:
+        await q.answer("Não achei essa cobrança para reenviar.", show_alert=True)
+        return
+    feitos = len(entregas(d, rid, pchave))
+    if feitos >= meta(r):
+        await q.answer("Essa já foi entregue ✅ – não reenviei.", show_alert=True)
+        return
+    import time as _t
+    ult = (d.get("reenviado") or {}).get(f"{rid}|{pchave}", 0)
+    if _t.time() - ult < 120:
+        await q.answer("Acabei de reenviar ✅")
+        return
+    d.setdefault("reenviado", {})[f"{rid}|{pchave}"] = _t.time()
+    gravar(d)
+    await q.answer("Reenviando no grupo…")
+    fim = datetime.fromisoformat(info["fim"])
+    texto = texto_cobranca(r, "cobranca", info["rotulo"], fim, feitos)
+    linhas = texto.split("\n")
+    linhas[1:1] = ["", B.tempo_prazo(fim)]  # logo abaixo do título com as sirenes
+    chat, top = destino(r["topico"])
+    await B.enviar(context.bot, chat, "\n".join(linhas), message_thread_id=top, reply_markup=botao_feito(r, pchave))
+    await B.enviar(context.bot, q.message.chat.id, f"📣 Reenviado no grupo do bar: <b>{B.esc(r.get('nome_curto', r['nome']))}</b> · "
+                                                   + B.tempo_prazo(fim).replace("<b>", "").replace("</b>", ""))
+
 async def botao_feito_bar(update: Update, context):
     q = update.callback_query
     _, rid, pchave = q.data.split("|", 2)
@@ -989,3 +1029,4 @@ def registrar_handlers(app):
     app.add_handler(CommandHandler("farol", cmd_farol))
     app.add_handler(CallbackQueryHandler(botao_classificar, pattern=r"^bc\|"))
     app.add_handler(CallbackQueryHandler(botao_feito_bar, pattern=r"^bf\|"))
+    app.add_handler(CallbackQueryHandler(botao_reenviar_bar, pattern=r"^bg\|"))
