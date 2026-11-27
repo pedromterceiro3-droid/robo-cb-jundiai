@@ -806,3 +806,53 @@ def seguimento(token: str, refresh: str | None, numero: str, status: str, descri
         return "ok|não consegui confirmar na lista de correções – confira no Leankeep"
     except Exception as e:
         return f"ok|não consegui conferir ({e})"
+
+
+# =====================================================================
+#  Excluir ocorrência (Lista de Ocorrências › marcar a linha › Excluir)
+# =====================================================================
+URL_LISTA_OC = "/Anomalias/ShowListaAnomaliasPage.aspx"
+
+
+def _buscar_lista(lg: "Legado", numero: str):
+    r = lg._get(URL_LISTA_OC)
+    pc = "ctl00$PageContent$"
+    return lg._enviar_form(str(r.url), r.text, {
+        pc + "ProcurarPorFilter1": "CQA", pc + "AnomaliasUltimasAcoesNListSearchText1": numero,
+        pc + "StatusAnomaliaFilter2": ["1", "2", "3", "4", "5"],
+        pc + "SearchButton3.x": "4", pc + "SearchButton3.y": "4"})
+
+
+def _linha_da_ocorrencia(html: str, numero: str) -> list[str]:
+    """Nomes das caixinhas SelectRow das linhas cujo número é exatamente `numero`."""
+    achadas = []
+    for tr in re.findall(r"<tr>(.*?)</tr>", html, re.S):
+        caixa = re.search(r'name="([^"]*AnomaliasUltimasAcoesNListTableControlRepeater\$ctl\d+\$SelectRow)"', tr)
+        if caixa and re.search(r">\s*" + re.escape(numero) + r"\s*</a>", tr):
+            achadas.append(caixa.group(1))
+    return achadas
+
+
+def excluir(token: str, refresh: str | None, numero: str, empresa_id: str = "3802") -> str:
+    """Exclui a ocorrência no Leankeep (só ela). Devolve 'ok' depois de conferir que sumiu da lista."""
+    numero = numero.strip().upper()
+    lg = Legado(token, refresh, empresa_id)
+    r = _buscar_lista(lg, numero)
+    linhas = _linha_da_ocorrencia(r.text, numero)
+    if len(linhas) != 1:
+        raise RuntimeError(f"não excluí: achei {len(linhas)} linha(s) com o número {numero} na Lista de Ocorrências "
+                           f"(preciso de exatamente 1)")
+    # só a caixinha desta ocorrência marcada (o formulário não traz nenhuma outra marcada)
+    action, campos = _ler_form(r.text)
+    campos = {k: v for k, v in campos.items() if not k.endswith("$SelectRow") and not k.endswith("$ToggleAll")}
+    campos[linhas[0]] = "on"
+    campos["__EVENTTARGET"], campos["__EVENTARGUMENT"] = "ctl00$PageContent$DeleteButton$_Button", ""
+    base = str(r.url).split("?")[0].rsplit("/", 1)[0] + "/"
+    alvo = action if action.startswith("http") else (BASE + action if action.startswith("/") else base + action.lstrip("./"))
+    r2 = lg.http.post(alvo, data=campos, headers={"Referer": quote(str(r.url), safe=":/?&=%#;+,@!$'()*~.-_")})
+    r2.raise_for_status()
+    avisos = re.findall(r"""alert\(\s*['"]([^'"]{3,200})['"]""", r2.text)
+    # confere: a ocorrência não pode mais aparecer na busca
+    if _linha_da_ocorrencia(_buscar_lista(lg, numero).text, numero):
+        raise RuntimeError("o Leankeep não excluiu" + (f": {' | '.join(avisos)[:200]}" if avisos else ""))
+    return "ok"

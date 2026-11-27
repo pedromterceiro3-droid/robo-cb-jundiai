@@ -1941,7 +1941,9 @@ async def sg_menu(bot, chat, ident, editar=None):
     bts = [InlineKeyboardButton(("• " if n == atual else "") + n.replace("Encaminhada para ", "Enc. ")[:30],
                                 callback_data=f"sg|c|{ident}|{c}")
            for c, n in legado.STATUS_CORRECAO.items() if c != "35788"]
-    linhas = [bts[i:i + 2] for i in range(0, len(bts), 2)] + [[InlineKeyboardButton("✖️ Cancelar", callback_data="sg|x")]]
+    linhas = [bts[i:i + 2] for i in range(0, len(bts), 2)]
+    linhas.append([InlineKeyboardButton("🗑️ Excluir no Leankeep", callback_data=f"sg|e|{ident}")])
+    linhas.append([InlineKeyboardButton("✖️ Cancelar", callback_data="sg|x")])
     txt = (f"🔧 <b>Seguimento da ocorrência {esc(rot)}</b>\n{esc(((o or {}).get('texto') or '')[:200])}\n\n"
            f"Status atual: <b>{esc(atual)}</b>\n<b>Qual o novo status?</b>")
     if editar:
@@ -2034,6 +2036,44 @@ async def sg_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if p[1] == "m":
         await sg_menu(context.bot, q.message.chat.id, ident, editar=None if q.message.photo else q)
         return
+    if p[1] == "e":  # confirmação antes de excluir
+        numero, o, rot = _sg_alvo(ident)
+        txt = (f"🗑️ <b>Excluir a ocorrência {esc(rot)} no Leankeep?</b>\n{esc(((o or {}).get('texto') or '')[:200])}\n\n"
+               f"Ela é apagada só no Leankeep: no Telegram (grupo e lista do robô) fica tudo como está.\n"
+               f"<b>Não dá para desfazer.</b>")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ Sim, excluir {numero}", callback_data=f"sg|E|{ident}")],
+                                   [InlineKeyboardButton("↩️ Voltar", callback_data=f"sg|m|{ident}")]])
+        if q.message.photo:
+            await enviar(context.bot, q.message.chat.id, txt, reply_markup=kb)
+        else:
+            await q.edit_message_text(limpar_texto(txt), parse_mode=ParseMode.HTML, reply_markup=kb)
+        return
+    if p[1] == "E":
+        import time as _t
+        numero, o, rot = _sg_alvo(ident)
+        if _t.time() - REENVIO_FEITO.get(f"excluir|{numero}", 0) < 300:
+            return  # toque repetido enquanto exclui
+        REENVIO_FEITO[f"excluir|{numero}"] = _t.time()
+        try:
+            await q.edit_message_text(f"⏳ Excluindo a {rot} no Leankeep…")
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(asyncio.to_thread(_lk_chamar, legado.excluir, numero), 240)
+        except Exception as ex:
+            REENVIO_FEITO.pop(f"excluir|{numero}", None)
+            log.exception("Excluir no Leankeep falhou")
+            await enviar(context.bot, q.message.chat.id, f"⚠️ <b>Não excluí a {esc(rot)}.</b>\n{esc(str(ex)[:300])}")
+            return
+        dados = oc_dados()
+        for it in dados["itens"].values():
+            if (it.get("leankeep") or {}).get("numero") == numero:
+                it["leankeep"]["status"] = "Excluída no Leankeep"
+                it["leankeep"]["excluida_em"] = datetime.now(FUSO).isoformat(timespec="minutes")
+        gravar(ARQ_OCORR, dados)
+        await enviar(context.bot, q.message.chat.id, f"🗑️ <b>{esc(rot)} excluída no Leankeep.</b>\n"
+                                                     f"Conferi na Lista de Ocorrências: não aparece mais. No Telegram nada mudou.")
+        return
     cod = p[3]
     if p[1] == "c":
         await sg_confirmar(context.bot, q.message.chat.id, ident, cod, editar=None if q.message.photo else q)
@@ -2097,7 +2137,8 @@ async def cmd_seguimento(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await sg_menu(context.bot, update.effective_chat.id, context.args[0])
         return
     abertas = sorted([o for o in oc_dados()["itens"].values()
-                      if (o.get("leankeep") or {}).get("numero") and (o["leankeep"].get("status") != "Solucionada")],
+                      if (o.get("leankeep") or {}).get("numero")
+                      and o["leankeep"].get("status") not in ("Solucionada", "Excluída no Leankeep")],
                      key=lambda o: -o["num"])[:10]
     if not abertas:
         await update.effective_message.reply_text(
