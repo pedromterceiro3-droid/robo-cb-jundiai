@@ -3078,7 +3078,8 @@ async def ag_listar(bot, chat, top, cob=None, responder_a=None):
     d.setdefault("listas", {})[chave] = grupos
     d["listas"] = dict(list(d["listas"].items())[-20:])
     gravar(ARQ_AG, d)
-    bts = [[InlineKeyboardButton(f"{g['plano'].title()[:34]} ({len(g['ids'])})", callback_data=f"ag|p|{chave}|{i}")]
+    bts = [[InlineKeyboardButton(f"{_ag_nome(g['plano'], 40)} · {len(g['ids'])} atividade{'s' if len(g['ids']) != 1 else ''}",
+                                 callback_data=f"ag|p|{chave}|{i}")]
            for i, g in enumerate(grupos[:20])]
     titulo = f"<b>{esc(cob['nome'])}</b>" if cob else f"<b>Atividades pendentes hoje</b> ({hoje():%d/%m})"
     await enviar(bot, chat, f"📲 {titulo}\nQual plano você vai baixar no Leankeep? 👇", message_thread_id=top,
@@ -3162,8 +3163,15 @@ def _ag_proximo_medidor(p: dict):
     return None
 
 
+def _ag_nome(plano: str, limite: int = 0) -> str:
+    """'FECHAMENTO DA LOJA' -> 'Fechamento da Loja' (corta com … se passar do limite)."""
+    pal = (plano or "-").lower().split()
+    n = " ".join(w if (i and w in _AG_VAZIAS) else w[:1].upper() + w[1:] for i, w in enumerate(pal))
+    return n if not limite or len(n) <= limite else n[:limite - 1].rstrip() + "…"
+
+
 def _ag_texto(p: dict, quem: str = "") -> str:
-    L = [f"📲 <b>Baixar no Leankeep: {esc(p['plano'].title())}</b>", ""]
+    L = [f"📲 <b>Baixar no Leankeep: {esc(_ag_nome(p['plano']))}</b>", ""]
     L += [f"• {esc(x)}" for x in p["desc"][:15]]
     if len(p["desc"]) > 15:
         L.append(f"• … e mais {len(p['desc']) - 15}")
@@ -3176,28 +3184,44 @@ def _ag_texto(p: dict, quem: str = "") -> str:
                          + (" · foto ✅" if (p.get("fotos_med") or {}).get(m) else (" · falta foto ❗" if p.get("foto_obrig") else " ✅")))
             else:
                 L.append(f"• {esc(m)}: <i>falta digitar</i>" + (" · foto ✅" if (p.get("fotos_med") or {}).get(m) else "") + " ❗")
-    L += ["", f"Observação: <b>{esc(p['obs'])}</b>" if p.get("obs") else
-          "Observação: <i>nenhuma (para incluir, responda com o texto começando por obs:)</i>"]
-    L += [f"Hora da baixa: <b>agora</b> · Executor: <b>{esc(quem or 'quem tocar em Baixar')}</b>",
+    L += ["", f"Observação: <b>{esc(p['obs'])}</b>" if p.get("obs") else "Observação: <i>nenhuma</i>"]
+    L += [f"Hora da baixa: <b>agora</b> · Executor: <b>{esc(quem or p.get('quem') or 'quem tocar em Baixar')}</b>",
           f"Fotos: <b>{_ag_n_fotos(p)}</b>" + (" 📷" if _ag_n_fotos(p) else "")
           + (" · <b>foto obrigatória</b> ❗" if _ag_falta_foto(p) else ""), ""]
     prox = _ag_proximo_medidor(p) or (_ag_falta_foto(p) if p.get("medidores") else None)
     if prox:
-        L.append(f"<i>Responda esta mensagem com a leitura e a foto de <b>{esc(prox)}</b>"
+        L.append(f"<i>Próximo: <b>{esc(prox)}</b>. Toque em 🔢 Digitar leitura e em 📷 Enviar foto"
                  + (" (um medidor de cada vez, na ordem da lista)" if len(p.get("medidores", [])) > 1 else "")
                  + ". Depois toque em ✅ Baixar agora.</i>")
     elif p.get("foto_obrig") and not _ag_falta_foto(p):
         L.append("<i>Tudo pronto: toque em ✅ Baixar agora.</i>")
     elif p.get("foto_obrig"):
-        L.append("<i>Este plano precisa de foto: responda esta mensagem com a foto. Depois toque em ✅ Baixar agora.</i>")
+        L.append("<i>Este plano precisa de foto: toque em 📷 Enviar foto e mande a foto. Depois toque em ✅ Baixar agora.</i>")
     else:
-        L.append("<i>Para anexar foto, responda esta mensagem com a foto. Depois toque em ✅ Baixar agora.</i>")
+        L.append("<i>Foto e observação são opcionais. Quando terminar, toque em ✅ Baixar agora.</i>")
     return "\n".join(L)
 
 
-def _ag_kb(mid) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Baixar agora", callback_data=f"ag|s|{mid}"),
-                                  InlineKeyboardButton("✖️ Cancelar", callback_data=f"ag|x|{mid}")]])
+def _ag_kb(mid, p: dict | None = None) -> InlineKeyboardMarkup:
+    if p is None:
+        p = (ler(ARQ_AG, {}).get("pend") or {}).get(str(mid)) or {}
+    linhas = []
+    if p.get("medidores"):
+        linhas.append([InlineKeyboardButton("🔢 Digitar leitura", callback_data=f"ag|l|{mid}")])
+    linhas.append([InlineKeyboardButton("📷 Enviar foto", callback_data=f"ag|f|{mid}"),
+                   InlineKeyboardButton("✍️ Observação", callback_data=f"ag|o|{mid}")])
+    linhas.append([InlineKeyboardButton("✅ Baixar agora", callback_data=f"ag|s|{mid}"),
+                   InlineKeyboardButton("✖️ Cancelar", callback_data=f"ag|x|{mid}")])
+    return InlineKeyboardMarkup(linhas)
+
+
+_AG_PEDIDOS = {
+    "f": ("📷 {nome}, mande a foto <b>respondendo esta mensagem</b>{de}.\n"
+          "No celular: toque no clipe 📎 (ou na câmera) e escolha a foto.", "Mande a foto"),
+    "o": ("✍️ {nome}, escreva a observação <b>respondendo esta mensagem</b>.", "Escreva a observação"),
+    "l": ("🔢 {nome}, digite a leitura de <b>{med}</b> <b>respondendo esta mensagem</b>.\n"
+          "Igual à tabela, ex.: <code>1.770.510,25</code>", "Ex.: 1.770.510,25"),
+}
 
 
 async def ag_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3225,7 +3249,7 @@ async def ag_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.answer("Essa lista é antiga. Peça de novo.", show_alert=True)
             return
         await q.answer()
-        pend = dict(g, fotos=[], pedido_por=q.from_user.id, foto_obrig=ag_foto_obrigatoria(g["plano"], g["desc"]),
+        pend = dict(g, fotos=[], pedido_por=q.from_user.id, quem=q.from_user.first_name, foto_obrig=ag_foto_obrigatoria(g["plano"], g["desc"]),
                     medidores=ag_medidores(g["plano"], g["ids"], g["desc"]), leituras={})
         m = await enviar(context.bot, chat, _ag_texto(pend, q.from_user.first_name), message_thread_id=top)
         if m is not None:
@@ -3238,6 +3262,32 @@ async def ag_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pend = (d.get("pend") or {}).get(mid)
     if not pend:
         await q.answer("Essa baixa já foi feita ou cancelada.")
+        return
+    if p[1] in _AG_PEDIDOS:
+        await q.answer()
+        falta = None
+        if p[1] == "l":
+            falta = _ag_proximo_medidor(pend)
+            if not falta:
+                await q.answer("Todas as leituras já foram digitadas ✅", show_alert=True)
+                return
+        de = ""
+        if p[1] == "f" and pend.get("medidores"):
+            ff = _ag_falta_foto(pend)
+            de = f" de <b>{esc(ff)}</b>" if isinstance(ff, str) else ""
+        modelo, dica = _AG_PEDIDOS[p[1]]
+        txt = modelo.format(nome=_mencao_usuario(q.from_user), med=esc(falta or ""), de=de)
+        try:
+            pm = await context.bot.send_message(chat, limpar_texto(txt), parse_mode=ParseMode.HTML,
+                                                message_thread_id=top, reply_to_message_id=int(mid),
+                                                reply_markup=ForceReply(selective=True, input_field_placeholder=dica))
+        except Exception:
+            pm = await enviar(context.bot, chat, txt, message_thread_id=top,
+                              reply_markup=ForceReply(selective=True, input_field_placeholder=dica))
+        if pm is not None:
+            d.setdefault("pedidos", {})[str(pm.message_id)] = {"mid": mid, "tipo": p[1]}
+            d["pedidos"] = dict(list(d["pedidos"].items())[-40:])
+            gravar(ARQ_AG, d)
         return
     if p[1] == "x":
         d["pend"].pop(mid, None)
@@ -3304,7 +3354,7 @@ async def ag_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pend["baixando"] = False
         gravar(ARQ_AG, d)
         log.exception("Baixa pelo Telegram falhou")
-        await enviar(context.bot, chat, f"⚠️ Não consegui baixar <b>{esc(pend['plano'].title())}</b> no Leankeep.\n"
+        await enviar(context.bot, chat, f"⚠️ Não consegui baixar <b>{esc(_ag_nome(pend['plano']))}</b> no Leankeep.\n"
                                         f"<i>{esc(str(e)[:250])}</i>", message_thread_id=top, reply_markup=_ag_kb(mid))
         return
     d = ler(ARQ_AG, {})
@@ -3318,10 +3368,10 @@ async def ag_botao(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                            "em": datetime.now(FUSO).isoformat(timespec="minutes"), "quem": quem.full_name}
     gravar(ARQ_AG, d)
     if res.get("ja_baixadas"):
-        txt = f"✅ <b>{esc(pend['plano'].title())}</b>: já estava tudo baixado no Leankeep."
+        txt = f"✅ <b>{esc(_ag_nome(pend['plano']))}</b>: já estava tudo baixado no Leankeep."
     else:
         n = len(res.get("baixadas", []))
-        txt = (f"✅ <b>{esc(pend['plano'].title())}</b> baixado no Leankeep por {_mencao_usuario(quem)} "
+        txt = (f"✅ <b>{esc(_ag_nome(pend['plano']))}</b> baixado no Leankeep por {_mencao_usuario(quem)} "
                f"às {datetime.now(FUSO):%H:%M} ({n} atividade{'s' if n != 1 else ''})"
                + (f" · {res['fotos']} foto(s)" if res.get("fotos") else "")
                + "".join(f"\n• {esc(m)}: <b>{esc(v['texto'])}</b>"
@@ -3368,8 +3418,19 @@ async def ag_resposta(update: Update, context) -> bool:
         return False
     alvo = msg.reply_to_message.message_id
     d = ler(ARQ_AG, {})
+    pedido = (d.get("pedidos") or {}).pop(str(alvo), None)
+    tipo = None
+    if pedido:  # respondeu à mensagem de "📷 mande a foto" / "✍️ escreva a observação" / "🔢 digite a leitura"
+        tipo = pedido["tipo"]
+        try:
+            await context.bot.delete_message(msg.chat.id, alvo)
+        except Exception:
+            pass
+        alvo = int(pedido["mid"])
     pend = (d.get("pend") or {}).get(str(alvo))
     if not pend:
+        if pedido:
+            gravar(ARQ_AG, d)
         return False
     if msg.photo:
         fid = msg.photo[-1].file_id
@@ -3383,11 +3444,15 @@ async def ag_resposta(update: Update, context) -> bool:
         await reagir(context.bot, msg, "👍")
     else:
         texto = msg.text.strip()
-        if texto.lower().startswith(("obs:", "obs ", "observação", "observacao")):
+        if tipo == "o":
+            numeros = []
+        elif texto.lower().startswith(("obs:", "obs ", "observação", "observacao")):
             texto = re.sub(r"^(obs|observa[cç][aã]o)\s*:?\s*", "", texto, flags=re.I)
             numeros = []
         else:
             numeros = re.findall(r"[\d.,]+\d", texto) if _ag_proximo_medidor(pend) else []
+            if tipo == "l" and not numeros and _ag_proximo_medidor(pend):
+                numeros = [texto]  # pediu leitura: o texto é tratado como número (e o formato é conferido)
         if not numeros:
             # sem leitura para digitar (ou texto sem números): vira a observação da baixa
             pend["obs"] = (pend.get("obs", "") + " " + texto).strip()[:500]
